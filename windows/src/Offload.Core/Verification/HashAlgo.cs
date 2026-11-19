@@ -11,11 +11,11 @@ public interface IFileHash
     string Finish();
 }
 
-/// The ASC MHL hash types the .NET class library has (R9): xxh64, md5, sha1, xxh3, xxh128, c4. Values are lower-case hex
+/// The ASC MHL hash types the .NET class library has (R9): xxh64, md5, sha1, xxh3, xxh128, c4, plus sha256 (the proof manifest, plan 11). Values are lower-case hex
 /// of the canonical (big-endian) digest, as ascmhl writes them; c4 is "c4" + base58(SHA-512) like Mhl.C4.
 public static class HashAlgo
 {
-    public static readonly IReadOnlyList<string> Names = ["xxh64", "md5", "sha1", "xxh3", "xxh128", "c4"];
+    public static readonly IReadOnlyList<string> Names = ["xxh64", "md5", "sha1", "xxh3", "xxh128", "c4", "sha256"];
 
     public static bool IsKnown(string name) => Names.Contains(name);
 
@@ -27,6 +27,7 @@ public static class HashAlgo
         "md5" => new Crypto(IncrementalHash.CreateHash(HashAlgorithmName.MD5), c4: false),
         "sha1" => new Crypto(IncrementalHash.CreateHash(HashAlgorithmName.SHA1), c4: false),
         "c4" => new Crypto(IncrementalHash.CreateHash(HashAlgorithmName.SHA512), c4: true),
+        "sha256" => new Crypto(IncrementalHash.CreateHash(HashAlgorithmName.SHA256), c4: false),
         _ => throw new ArgumentException($"unknown hash type {name}", nameof(name)),
     };
 
@@ -42,7 +43,7 @@ public static class HashAlgo
     public static bool Same(string name, string a, string b) =>
         string.Equals(a.Trim(), b.Trim(), name == "c4" ? StringComparison.Ordinal : StringComparison.OrdinalIgnoreCase);
 
-    /// For people: "xxHash64", "MD5", "SHA-1", "xxHash3", "xxHash128", "C4".
+    /// For people: "xxHash64", "MD5", "SHA-1", "xxHash3", "xxHash128", "C4", "SHA-256".
     public static string Label(string name) => name switch
     {
         "xxh64" => "xxHash64",
@@ -51,6 +52,7 @@ public static class HashAlgo
         "xxh3" => "xxHash3",
         "xxh128" => "xxHash128",
         "c4" => "C4",
+        "sha256" => "SHA-256",
         _ => name,
     };
 

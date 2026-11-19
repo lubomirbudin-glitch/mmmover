@@ -3,13 +3,15 @@ using Offload.Core.Verification;
 namespace Offload.Core;
 
 /// The checksums a copy computes (spec 3.5, R16): xxh64 always, MD5 only in addition — never MD5 alone, so every
-/// backup stays verifiable by the Mac and by older `offload verify`.
+/// backup stays verifiable by the Mac and by older `offload verify`. `Sha256` (plan 11) is a flag of its own for the
+/// proof manifest; it is not a setting value, so `Both` stays "xxh64 + MD5" and the MD5 checks use `HasFlag(Md5)`.
 [Flags]
 public enum HashKind
 {
     Xxh64 = 1,
     Md5 = 2,
     Both = Xxh64 | Md5,
+    Sha256 = 4,
 }
 
 public static class HashKinds
@@ -17,13 +19,26 @@ public static class HashKinds
     /// R16: xxh64 is always in.
     public static HashKind Normalize(HashKind kinds) => kinds | HashKind.Xxh64;
 
-    /// The ASC MHL / report names, in that order: ["xxh64"] or ["xxh64", "md5"].
-    public static IReadOnlyList<string> Names(HashKind kinds) =>
-        Normalize(kinds).HasFlag(HashKind.Md5) ? ["xxh64", "md5"] : ["xxh64"];
+    /// The ASC MHL / report names, in that order: "xxh64", then "md5" and "sha256" when asked for.
+    public static IReadOnlyList<string> Names(HashKind kinds)
+    {
+        var all = Normalize(kinds);
+        var names = new List<string> { "xxh64" };
+        if (all.HasFlag(HashKind.Md5)) names.Add("md5");
+        if (all.HasFlag(HashKind.Sha256)) names.Add("sha256");
+        return names;
+    }
 
-    /// From a report's hash names ("md5" anywhere → both); anything else is xxh64.
-    public static HashKind FromNames(IEnumerable<string>? names) =>
-        names != null && names.Contains("md5", StringComparer.OrdinalIgnoreCase) ? HashKind.Both : HashKind.Xxh64;
+    /// From a report's hash names ("md5" anywhere → both, "sha256" adds SHA-256); anything else is xxh64.
+    public static HashKind FromNames(IEnumerable<string>? names)
+    {
+        if (names == null) return HashKind.Xxh64;
+        var list = names.ToList();
+        var kinds = HashKind.Xxh64;
+        if (list.Contains("md5", StringComparer.OrdinalIgnoreCase)) kinds |= HashKind.Md5;
+        if (list.Contains("sha256", StringComparer.OrdinalIgnoreCase)) kinds |= HashKind.Sha256;
+        return kinds;
+    }
 
     /// settings.json `hash` and CLI --hash: "xxh64" | "both".
     public static string Wire(HashKind kinds) => Normalize(kinds).HasFlag(HashKind.Md5) ? "both" : "xxh64";

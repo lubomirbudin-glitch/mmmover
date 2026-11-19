@@ -21,6 +21,7 @@ Plány: [`windows/docs/superpowers/plans/`](../windows/docs/superpowers/plans/)
 | 8 | nastavení, oznámení, distribuce: projekty, vlastní pravidla LUTů, BRAW Film Gen 4 → Gen 5, oznámení Windows a ntfy, kontrola aktualizací, verze z `Directory.Build.props`, `build.ps1 -Sign` (0.4.0) | hotovo (čeká ruční test: oznámení, podpis; Gen 4 čeká vzorek) |
 | 9 | nový vzhled podle `docs/ui-navrh/`: tmavé a světlé téma, horní lišta, kroky 1–3, karty úloh s průběhem po cílech, pozastavení, oprava nesouhlasných souborů, dnešní historie, okno Nastavení (0.5.0) | hotovo (čeká ruční test 40–49 s kartou a vizuální kontrolu proti `docs/ui-navrh/screeny`) |
 | 10 | Verify-in-Proxy: primární disk ověřený čtením pro proxy (HTTP tap pro ffmpeg, čtení přes cache pro RAW SDK), ostatní disky na pozadí, „Lze vyjmout“ × „Lze formátovat“, blokový manifest a navázání po pádu, XXH128 v ASC MHL, obsahová kontrola dekodérem (0.6.0) | hotovo (čeká ruční test 50–58: karta, RAW, přímý zápis na zařízení) |
+| 11 | Offload Proof: SHA-256, manifest, OpenTimestamps, ověřovač | ve vývoji |
 
 
 ## Naplánováno
@@ -86,6 +87,12 @@ Plány: [`windows/docs/superpowers/plans/`](../windows/docs/superpowers/plans/)
 - **Snímací fps, pauza po souboru/klipu, souhrnný report (zadání 2026-10-09/10)** — hotovo ve verzi 0.8.0, viz níže.
 
 - **Zjištění z ostrého nasazení Mac verze a nové úkoly z 2026-10-09** — převzato ve verzích 0.7.0 a 0.7.1, viz níže.
+
+## 2026-11-19 — Plán 11 — Offload Proof
+
+Návrh: [`windows/docs/superpowers/specs/2026-11-19-offload-proof-design.md`](../windows/docs/superpowers/specs/2026-11-19-offload-proof-design.md).
+
+- Úkol 1 — SHA-256 jako druh hashe (`HashKind.Sha256`, `HashAlgo` „sha256“), `bench --hash sha256`; spike: Intel Core i5-14400F (SHA-NI), xxh64 ~12 000 MB/s, SHA-256 ~1 950 MB/s na jednom vlákně (RAM, `bench --hash sha256`, Release) — kopie se zdrží jen, když je karta rychlejší než SHA-256 (brána < 5 %).
 
 ## 2026-10-12 — nová ikona (obě verze)
 

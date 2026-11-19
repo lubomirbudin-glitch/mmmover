@@ -84,6 +84,11 @@ public class CliOutputsTests
         Assert.Equal(0, md5.Exit);
         Assert.Contains("md5 in RAM", md5.Out);
         Assert.Contains("xxh64 in RAM", md5.Out);
+        var sha = Run(BenchCommand.Create(), "--hash", "sha256");
+        Assert.Equal(0, sha.Exit);
+        Assert.Contains("xxh64 in RAM", sha.Out);
+        Assert.Contains("sha256 in RAM", sha.Out);
+        Assert.DoesNotContain("md5 in RAM", sha.Out);
         var bad = Run(BenchCommand.Create(), "--hash", "sha1");
         Assert.Equal(1, bad.Exit);
         Assert.Contains("Unknown checksum \"sha1\"", bad.Err);

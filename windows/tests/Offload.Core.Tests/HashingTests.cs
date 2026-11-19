@@ -83,4 +83,24 @@ public class HashingTests
         Assert.Equal(HashKind.Xxh64, HashKinds.FromNames(null));
         Assert.Equal(HashKind.Xxh64, HashKinds.FromNames(["xxh64"]));
     }
+
+    // Plan 11: SHA-256 is a kind of its own; Wire/Label/FromSetting still look at MD5 only.
+    [Fact]
+    public void Sha256_IsAKindOfItsOwn()
+    {
+        Assert.Equal(["xxh64", "sha256"], HashKinds.Names(HashKind.Xxh64 | HashKind.Sha256));
+        Assert.Equal(["xxh64", "md5", "sha256"], HashKinds.Names(HashKind.Both | HashKind.Sha256));
+        Assert.Equal(HashKind.Xxh64 | HashKind.Sha256, HashKinds.FromNames(["xxh64", "sha256"]));
+        Assert.Equal(HashKind.Both | HashKind.Sha256, HashKinds.FromNames(["xxh64", "md5", "sha256"]));
+        Assert.Equal("xxh64", HashKinds.Wire(HashKind.Xxh64 | HashKind.Sha256));
+        Assert.Equal("both", HashKinds.Wire(HashKind.Both | HashKind.Sha256));
+    }
+
+    [Fact]
+    public void HashAlgo_Sha256()
+    {
+        Assert.Equal("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad", Verification.HashAlgo.Of("sha256", "abc"u8));
+        Assert.True(Verification.HashAlgo.IsKnown("sha256"));
+        Assert.Equal("SHA-256", Verification.HashAlgo.Label("sha256"));
+    }
 }
