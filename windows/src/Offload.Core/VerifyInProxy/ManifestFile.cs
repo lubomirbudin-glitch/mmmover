@@ -23,6 +23,9 @@ public sealed class ManifestRecord
     [JsonPropertyName("xxh64"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public string? Xxh64 { get; init; }
     [JsonPropertyName("md5"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public string? Md5 { get; init; }
     [JsonPropertyName("xxh128"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public string? Xxh128 { get; init; }
+    /// Plan 11: SHA-256 of the card's file when the copy had the proof on (64 lower-case hex digits) — a resume knows it
+    /// for the files it does not read again.
+    [JsonPropertyName("sha256"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public string? Sha256 { get; init; }
     [JsonPropertyName("blockSize")] public int BlockSize { get; init; }
     /// `part` only: the index of the first block in `blocks`.
     [JsonPropertyName("first"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] public int First { get; init; }
@@ -47,7 +50,8 @@ public sealed class ManifestRecord
         return new BlockManifest(Size, BlockSize, values);
     }
 
-    /// The hashes the card gave, as the copy records them; null when xxh64 is not readable.
+    /// The hashes the card gave, as the copy records them; null when xxh64 is not readable, or md5 or sha256 is there but
+    /// is not hex (sha256: not 64 hex digits).
     public FileHashes? Hashes()
     {
         if (Xxh64 is not { Length: 16 } x || !ulong.TryParse(x, NumberStyles.AllowHexSpecifier, CultureInfo.InvariantCulture, out var xx)) return null;
@@ -57,7 +61,8 @@ public sealed class ManifestRecord
             try { md5 = Convert.FromHexString(Md5); }
             catch (FormatException) { return null; }
         }
-        return new FileHashes(xx, md5, Xxh128);
+        if (Sha256 != null && (Sha256.Length != 64 || !Sha256.All(char.IsAsciiHexDigit))) return null;
+        return new FileHashes(xx, md5, Xxh128, Sha256?.ToLowerInvariant());
     }
 }
 

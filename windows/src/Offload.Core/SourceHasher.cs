@@ -7,6 +7,7 @@ namespace Offload.Core;
 /// beside xxh64 on its own thread, so the slower MD5 never holds up xxh64 or the card read — only the buffer pool,
 /// when it falls a whole pool behind. Plan 10 (R2, spec 4.2): the xxh64 hasher also keeps XXH3-128 of the whole file
 /// and XXH3-64 of every block (`blockSize` bytes, the last one shorter) — the block manifest and the MHL's xxh128.
+/// Plan 11: with the proof, SHA-256 is one hasher more on its own thread, as MD5.
 internal sealed class SourceHasher : IDisposable
 {
     readonly SerialWorker worker;
@@ -34,7 +35,7 @@ internal sealed class SourceHasher : IDisposable
         Kind = kind;
         this.create = create ?? HashAlgo.Create;
         this.blockSize = blockSize;
-        algorithm = kind == HashKind.Md5 ? "md5" : "xxh64";
+        algorithm = kind switch { HashKind.Md5 => "md5", HashKind.Sha256 => "sha256", _ => "xxh64" };
         worker = new SerialWorker("offload.hash." + algorithm);
         Values = new string?[fileCount];
         Errors = new string?[fileCount];
@@ -42,15 +43,17 @@ internal sealed class SourceHasher : IDisposable
         Blocks = new ulong[]?[fileCount];
     }
 
-    /// "md5 hash failed: …" when a hasher could not hash file `index` (English: it goes into the report JSON).
+    /// "md5 hash failed: …" when a hasher could not hash file `index` (English: it goes into the report JSON). Not for
+    /// SHA-256 (plan 11): the proof never fails a file — it is left without its SHA-256 (the proof leaves it out).
     public static string? ErrorOf(IReadOnlyList<SourceHasher> hashers, int index) =>
-        hashers.FirstOrDefault(h => h.Errors[index] != null) is { } h ? $"{h.algorithm} hash failed: {h.Errors[index]}" : null;
+        hashers.FirstOrDefault(h => h.Kind != HashKind.Sha256 && h.Errors[index] != null) is { } h ? $"{h.algorithm} hash failed: {h.Errors[index]}" : null;
 
     /// One hasher per kind in `kinds` (xxh64 always first; it also keeps the blocks and XXH3-128 when `blockSize` > 0).
     public static List<SourceHasher> For(HashKind kinds, int fileCount, Func<string, IFileHash>? create = null, int blockSize = 0)
     {
         var all = new List<SourceHasher> { new(HashKind.Xxh64, fileCount, create, blockSize) };
         if (HashKinds.Normalize(kinds).HasFlag(HashKind.Md5)) all.Add(new SourceHasher(HashKind.Md5, fileCount, create));
+        if (kinds.HasFlag(HashKind.Sha256)) all.Add(new SourceHasher(HashKind.Sha256, fileCount, create));
         return all;
     }
 
@@ -59,10 +62,11 @@ internal sealed class SourceHasher : IDisposable
     {
         var xx = hashers.FirstOrDefault(h => h.Kind == HashKind.Xxh64);
         var md5 = hashers.FirstOrDefault(h => h.Kind == HashKind.Md5);
+        var sha256 = hashers.FirstOrDefault(h => h.Kind == HashKind.Sha256);
         return Enumerable.Range(0, fileCount).Select(i => new FileHashes(
             xx?.Values[i] is string x ? Convert.ToUInt64(x, 16) : null,
             md5?.Values[i] is string m ? Convert.FromHexString(m) : null,
-            xx?.Xxh128[i])).ToArray();
+            xx?.Xxh128[i], sha256?.Values[i])).ToArray();
     }
 
     public void Begin() => worker.Post(() =>

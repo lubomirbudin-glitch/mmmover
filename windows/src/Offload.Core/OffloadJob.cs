@@ -54,6 +54,11 @@ public sealed class JobConfig(string source, IReadOnlyList<string> destRoots)
     /// Task 2026-10-09: the folder every card's report is copied to on this computer (LocalReports.RootFor of the
     /// profile; CLI --no-local-report = null); null = no local copy (also every test that does not ask for one).
     public string? LocalReports { get; set; }
+    /// Plan 11 (Offload Proof): SHA-256 of every file in the card read (`files[].sha256`) for the proof of the copy. Off by
+    /// default here; the app and the CLI turn it on from the settings (profile `proof`, on by default).
+    public bool Proof { get; set; }
+    /// Plan 11: where the proof queue lives; null = ProofStore.DefaultFolder (%APPDATA%\mmMover\proof).
+    public string? ProofFolder { get; set; }
 }
 
 /// `Finishing` (plan 10): after the proxies, the verification reads what they did not and waits for the other disks.
@@ -223,6 +228,7 @@ public sealed class OffloadJob
     public OffloadPlan Prepare()
     {
         if (Plan is { } done) return done;
+        Engine.Options.Proof = Config.Proof;   // plan 11: also for a job made with its own options (tests)
         if (Config.RepairInto is { Count: > 0 } broken)
         {
             var repair = Engine.PrepareRepair(Engine.PlanRepair(Config.Source, broken));

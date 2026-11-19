@@ -236,12 +236,13 @@ public sealed partial class OffloadEngine
         foreach (var h in hashers) h.Wait();
         var xx = hashers[0];
         var md5 = hashers.FirstOrDefault(h => h.Kind == HashKind.Md5);
+        var sha256 = hashers.FirstOrDefault(h => h.Kind == HashKind.Sha256);
         var batch = new List<(int File, DestWriter[] Targets)>();
         while (unrecorded.TryDequeue(out var item)) batch.Add(item);
         foreach (var w in batch.SelectMany(b => b.Targets).Distinct()) w.Wait();
         var hashes = batch.ToDictionary(b => b.File, b => new FileHashes(
             xx.Values[b.File] is string x ? Convert.ToUInt64(x, 16) : null,
-            md5?.Values[b.File] is string m ? Convert.FromHexString(m) : null, xx.Xxh128[b.File]));
+            md5?.Values[b.File] is string m ? Convert.FromHexString(m) : null, xx.Xxh128[b.File], sha256?.Values[b.File]));
         Append(plan, batch, hashes, i => xx.Blocks[i], afterFlush);
     }
 
@@ -270,7 +271,7 @@ public sealed partial class OffloadEngine
                 var record = new ManifestRecord
                 {
                     Generation = plan.Generation, Path = f.RelPath, Size = f.Size, Modified = f.ModifiedUtc, Xxh64 = Format.Hex64(x),
-                    Md5 = h.Md5Hex, Xxh128 = h.Xxh128, BlockSize = Options.ChunkSize, Blocks = ManifestRecord.Hex(blocks),
+                    Md5 = h.Md5Hex, Xxh128 = h.Xxh128, Sha256 = h.Sha256, BlockSize = Options.ChunkSize, Blocks = ManifestRecord.Hex(blocks),
                 };
                 if (w.FlushedAlone[i]) records.Add(record);
                 else lock (afterFlush) afterFlush.Add((w, record));
@@ -322,10 +323,12 @@ public sealed partial class OffloadEngine
         for (int i = 0; i < files.Count; i++)
         {
             var expected = plan.Expected![i];
-            // MD5 of a backup whose MD5 failed: the card's, when its xxh64 is the recorded one.
+            // MD5 of a backup whose MD5 failed: the card's, when its xxh64 is the recorded one (SHA-256 of a backup made with
+            // the proof, plan 11, the same way).
             bool same = hashes[i].Xxh64 == expected.Xxh64;
             recorded[i] = expected.Xxh64 == null ? hashes[i]
-                : new FileHashes(expected.Xxh64, expected.Md5 ?? (same ? hashes[i].Md5 : null), expected.Xxh128 ?? (same ? hashes[i].Xxh128 : null));
+                : new FileHashes(expected.Xxh64, expected.Md5 ?? (same ? hashes[i].Md5 : null), expected.Xxh128 ?? (same ? hashes[i].Xxh128 : null),
+                    expected.Sha256 ?? (same ? hashes[i].Sha256 : null));
             if (sourceErrors[i] == null && CardDiffers(expected, hashes[i]) is string differs)
             {
                 sourceErrors[i] = differs;

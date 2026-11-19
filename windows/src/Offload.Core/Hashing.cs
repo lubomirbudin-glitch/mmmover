@@ -58,7 +58,9 @@ public static class HashKinds
 
 /// The checksums of one file; null = not computed (the file failed, or MD5 was not asked for). `Xxh128` (plan 10, R2):
 /// XXH3-128 as ASC MHL writes it (32 lower-case hex digits) — every copy computes it next to xxh64; null in older reports.
-public readonly record struct FileHashes(ulong? Xxh64, byte[]? Md5, string? Xxh128 = null)
+/// `Sha256` (plan 11): SHA-256 of the card's file for the proof manifest (64 lower-case hex digits) — only a copy with
+/// the proof on computes it (in the card read, never in the read-back); null otherwise.
+public readonly record struct FileHashes(ulong? Xxh64, byte[]? Md5, string? Xxh128 = null, string? Sha256 = null)
 {
     public string? Xxh64Hex => Xxh64 is ulong x ? Format.Hex64(x) : null;
     public string? Md5Hex => Md5 is { } m ? Convert.ToHexStringLower(m) : null;
@@ -74,7 +76,8 @@ public static class Hashing
         return (Convert.ToUInt64(xx.Finish(), 16), size);
     }
 
-    /// Every hash in `kinds` (xxh64 always) in one read of the file — the read-back verification of a copy.
+    /// Every hash in `kinds` (xxh64 always) in one read of the file — the read-back verification of a copy. SHA-256
+    /// (plan 11) is never read back: a `Sha256` flag is ignored here.
     /// `beforeBlock`: called before every block is read (tests; Pozastavit waits between files, never here).
     public static (FileHashes Hashes, long Size) HashFile(string path, AlignedBuffer buffer, HashKind kinds, Action<int>? progress = null, CancellationToken ct = default,
         Action? beforeBlock = null)

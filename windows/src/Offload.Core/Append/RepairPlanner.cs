@@ -193,7 +193,7 @@ public static class RepairPlanner
                 .FirstOrDefault();
         var f = Newest(repairs: false) ?? Newest(repairs: true);
         return f == null ? new FileHashes(null, null)
-            : new FileHashes(Convert.ToUInt64(f.Xxh64, 16), f.Md5 is string m ? Convert.FromHexString(m) : null, f.Xxh128);
+            : new FileHashes(Convert.ToUInt64(f.Xxh64, 16), f.Md5 is string m ? Convert.FromHexString(m) : null, f.Xxh128, f.Sha256);
     }
 
     /// The newest record of a file holds a good copy on the destination of `cardPath` (its column in that report). A

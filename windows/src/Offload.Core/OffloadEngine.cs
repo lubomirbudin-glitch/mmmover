@@ -84,9 +84,12 @@ public sealed partial class OffloadEngine
         return new OffloadPlan
         {
             Source = source, Scan = scan, Date = day, CardName = name, DestRoots = roots, Space = space, SpaceWarnings = warnings,
-            Hashes = HashKinds.Normalize(Options.Hashes),
+            Hashes = WithProof(HashKinds.Normalize(Options.Hashes)),
         };
     }
+
+    /// Plan 11: a full copy, an append and a resume add SHA-256 when the proof is on (never a repair).
+    HashKind WithProof(HashKind kinds) => Options.Proof ? kinds | HashKind.Sha256 : kinds;
 
     /// An append (spec 2.2): the same checks as Prepare (options, source, destinations, Windows names, FAT32, space),
     /// but over the new files only, into the card folders of the earlier backup. `NothingNew` when there are none.
@@ -126,7 +129,8 @@ public sealed partial class OffloadEngine
             Source = a.Source, Scan = scan, Date = a.Date, CardName = a.CardName, DestRoots = a.DestRoots,
             Mode = PlanMode.Append, Generation = a.Generation, FullScan = a.FullScan, UnverifiedEarlier = a.UnverifiedEarlier,
             Space = space, SpaceWarnings = warnings,
-            Hashes = HashKinds.FromNames(a.HashAlgorithms),   // the earlier backup's, not the current setting (spec 3.5)
+            // The earlier backup's, not the current setting (spec 3.5); SHA-256 when the proof is on now (plan 11).
+            Hashes = WithProof(HashKinds.FromNames(a.HashAlgorithms)),
             // R6: completing an unfinished generation — what is on the disks already is not written again.
             Resuming = a.Resuming, Write = a.Write, NotInBackup = a.Later,
             Known = a.Known?.Select(k => k?.BlockSize == size ? k : null).ToList(),
@@ -183,6 +187,7 @@ public sealed partial class OffloadEngine
         {
             Source = r.Source, Scan = scan, Date = r.Date, CardName = r.CardName, DestRoots = r.DestRoots,
             Mode = PlanMode.Repair, Generation = r.Generation, Space = lines, SpaceWarnings = problems.Select(p => p.Text).ToList(),
+            // The backup's hashes only — the proof never adds SHA-256 to a repair (plan 11).
             Hashes = HashKinds.FromNames(r.HashAlgorithms), Write = r.Write, Expected = r.Expected, SetAside = r.SetAside,
             ReadBackBefore = r.ReadBackBefore, NotInBackup = r.NotInBackup,
         };

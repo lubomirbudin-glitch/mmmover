@@ -39,6 +39,9 @@ public sealed class ReportFile
     /// XXH3-128 of the card's file (plan 10, R2: into the ASC MHL next to xxh64), 32 lower-case hex digits; absent in
     /// older reports and for a file the card could not give. The Mac ignores it.
     [JsonPropertyName("xxh128")] public string? Xxh128 { get; init; }
+    /// Plan 11: SHA-256 of the card's file (the proof manifest), 64 lower-case hex digits; absent when the proof was off
+    /// or the card did not give the file. Never in the ASC MHL. The Mac ignores it.
+    [JsonPropertyName("sha256")] public string? Sha256 { get; init; }
     [JsonPropertyName("sourceError")] public string? SourceError { get; init; }
     [JsonPropertyName("destinations")] public required IReadOnlyList<string> Destinations { get; set; }
     [JsonPropertyName("errors")] public required IReadOnlyList<string?> Errors { get; set; }
@@ -59,7 +62,8 @@ public sealed partial class OffloadReport
     [JsonPropertyName("version")] public string Version { get; init; } = OffloadVersion.String;
     /// Always "xxh64" (the Mac only shows it); `hashAlgorithms` says when there is more.
     [JsonPropertyName("hashAlgorithm")] public string HashAlgorithm { get; init; } = "xxh64";
-    /// Only when it is not just xxh64 (spec 3.5): ["xxh64", "md5"].
+    /// Only when it is not just xxh64 (spec 3.5): ["xxh64", "md5"]; with the proof (plan 11) ["xxh64", "sha256"],
+    /// ["xxh64", "md5", "sha256"].
     [JsonPropertyName("hashAlgorithms")] public IReadOnlyList<string>? HashAlgorithms { get; init; }
     [JsonPropertyName("cardName")] public required string CardName { get; init; }
     [JsonPropertyName("date")] public required string Date { get; init; }
@@ -162,6 +166,8 @@ public sealed partial class OffloadReport
             Xxh64 = hashes[i].Xxh64Hex,
             Md5 = hashes[i].Md5Hex,
             Xxh128 = hashes[i].Xxh128,
+            // Only when this copy computes it: a resume without the proof leaves out what an earlier run's records had.
+            Sha256 = plan.Hashes.HasFlag(HashKind.Sha256) ? hashes[i].Sha256 : null,
             SourceError = sourceErrors[i],
             Destinations = destResults.Select(r => r[i].State.Wire()).ToList(),
             Errors = destResults.Select(r => r[i].Error).ToList(),
@@ -201,7 +207,7 @@ public sealed partial class OffloadReport
             VerifyPausedSeconds = Seconds(verifyPaused),
             SafeToFormatSeconds = verified && files.All(f => f.SourceError == null && f.Destinations.All(s => s == "verified"))
                 ? Math.Round(Math.Max(0, (finished - started - copyPaused - verifyPaused).TotalSeconds), 1) : null,
-            HashAlgorithms = HashKinds.Normalize(plan.Hashes).HasFlag(HashKind.Md5) ? HashKinds.Names(plan.Hashes) : null,
+            HashAlgorithms = HashKinds.Names(plan.Hashes) is { Count: > 1 } names ? names : null,
         };
     }
 
