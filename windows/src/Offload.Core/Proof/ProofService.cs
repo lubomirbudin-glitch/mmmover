@@ -205,9 +205,13 @@ public sealed class ProofService : IDisposable
 
         var notes = new List<string>();   // why calendars failed (a 404 is no failure), what a cap left out
         int added = await OtsCalendar.Upgrade(http, ots, options.AllowedCalendar, options.Timeout, ct, notes.Add).ConfigureAwait(false);
-        var check = ots.IsComplete ? await BitcoinHeaders.Verify(http, ots, options.HeaderSources, options.Timeout, ct, notes.Add).ConfigureAwait(false) : null;
+        // The heights contradicted before are not looked up again: the window of 16 moves up past them (re-review).
+        var check = ots.IsComplete
+            ? await BitcoinHeaders.Verify(http, ots, options.HeaderSources, options.Timeout, ct, notes.Add, skip: e.Contradicted).ConfigureAwait(false)
+            : null;
         var now = options.Now();
         var asking = notes.Count > 0 ? "asking the calendars: " + string.Join("; ", notes) : null;
+        bool contradiction = false;
 
         var saved = Saved(store.Update(e.Id, cur =>
         {
@@ -223,16 +227,20 @@ public sealed class ProofService : IDisposable
                 case BitcoinOutcome.Verified:
                     Complete(cur, check.Height, check.Time, now);
                     break;
-                case BitcoinOutcome.NotChecked or BitcoinOutcome.Mismatch when EarliestUncontradicted(merged, cur) is { } height:
+                case BitcoinOutcome.NotChecked or BitcoinOutcome.Mismatch when Unchecked(check, cur.Contradicted) is { } height:
                     // No explorer answered for it (or they disagree): the attestation stands, the block time stays
-                    // unknown — checked again on schedule (final fix C3). Never one the explorers contradicted (A2).
+                    // unknown — checked again on schedule (final fix C3). Only a block this check looked up — never one
+                    // the explorers contradicted (A2), never one over the cap it did not look up (re-review).
                     Complete(cur, height, null, now);
                     break;
                 case BitcoinOutcome.NotChecked or BitcoinOutcome.Mismatch:
+                case BitcoinOutcome.NoAttestation when cur.Contradicted is { Count: > 0 }:
                     // A calendar must not make a proof complete with an attestation the block contradicts (ruling R8) —
-                    // nor later, when the explorers are down (A2): every Bitcoin attestation it has was contradicted.
+                    // nor later, when the explorers are down (A2): every block looked up was contradicted (the next pass
+                    // looks up the next ones, if there are more).
                     cur.NextCheck = NextUpgrade(cur.StampedAt ?? now, now);
                     cur.LastError = Contradiction(cur);
+                    contradiction = true;
                     break;
                 default:
                     cur.NextCheck = NextUpgrade(cur.StampedAt ?? now, now);
@@ -242,8 +250,8 @@ public sealed class ProofService : IDisposable
             return cur;
         }));
         if (saved == null) return;
-        if (saved.State == ProofState.Pending && check?.Outcome is BitcoinOutcome.Mismatch or BitcoinOutcome.NotChecked)
-            Log($"{Who(e)}: {saved.LastError} ({check.Problem}) — not complete, asked again {saved.NextCheck:yyyy-MM-dd HH:mm} UTC");
+        if (saved.State == ProofState.Pending && contradiction)
+            Log($"{Who(e)}: {saved.LastError} ({check!.Problem}) — not complete, asked again {saved.NextCheck:yyyy-MM-dd HH:mm} UTC");
         else if (saved.State == ProofState.Complete && check != null)
             Log($"{Who(e)}: anchored in Bitcoin block {saved.BitcoinHeight}"
                 + (check.Outcome == BitcoinOutcome.Verified ? $" ({string.Join(", ", check.Sources)} agree)" : $" (block not checked: {check.Problem})"));
@@ -270,7 +278,7 @@ public sealed class ProofService : IDisposable
     {
         if (Parse(store.ReadOts(e.Id), digest) is not { } ots) return;   // the disk step says nothing either; next run again
         var notes = new List<string>();
-        var check = await BitcoinHeaders.Verify(http, ots, options.HeaderSources, options.Timeout, ct, notes.Add).ConfigureAwait(false);
+        var check = await BitcoinHeaders.Verify(http, ots, options.HeaderSources, options.Timeout, ct, notes.Add, skip: e.Contradicted).ConfigureAwait(false);
         var now = options.Now();
         var saved = Saved(store.Update(e.Id, cur =>
         {
@@ -281,8 +289,7 @@ public sealed class ProofService : IDisposable
                 Complete(cur, check.Height, check.Time, now);
                 return cur;
             }
-            var stored = Parse(store.ReadOts(cur.Id), digest) ?? ots;
-            if (EarliestUncontradicted(stored, cur) is { } height)
+            if (Unchecked(check, cur.Contradicted) is { } height)   // a block this check looked up, no header had
             {
                 cur.BitcoinHeight = height;
                 cur.NextCheck = NextUpgrade(cur.StampedAt ?? now, now);
@@ -322,9 +329,13 @@ public sealed class ProofService : IDisposable
 
     static ulong? EarliestBitcoin(OtsFile f) => BitcoinHeights(f).Select(h => (ulong?)h).Min();
 
-    /// The lowest Bitcoin height of `f` the explorers did not contradict (`e.Contradicted`); null when none.
-    static ulong? EarliestUncontradicted(OtsFile f, ProofEntry e) =>
-        BitcoinHeights(f).Where(h => e.Contradicted?.Contains(h) != true).Select(h => (ulong?)h).Min();
+    /// The lowest height `check` looked up whose block it could not check — neither verified nor contradicted (there or
+    /// in `contradicted`); null when none. A height it did not look up (over the cap, skipped) never counts: an
+    /// attestation nobody looked at must not anchor a proof (re-review of the fix wave, regression vs R8).
+    static ulong? Unchecked(BitcoinCheck check, IReadOnlyCollection<ulong>? contradicted) =>
+        check.Checked.Where(h => !check.Contradicted.Contains(h) && contradicted?.Contains(h) != true
+                                 && !(check.Outcome == BitcoinOutcome.Verified && h == check.Height))
+            .Select(h => (ulong?)h).Min();
 
     /// The stored timestamp (when it reads and has this digest) with `got` merged in; else `got`.
     static OtsFile Merge(byte[]? stored, byte[] digest, OtsFile got)
@@ -379,8 +390,10 @@ public sealed class ProofService : IDisposable
     }
 
     /// Writes `ots` as `<card>/_REPORT/<manifest>.ots` of every card path of `e` — only where `_REPORT/<manifest>`
-    /// is there with the entry's SHA-256 (another disk at the same path never gets it) and never with a Bitcoin
-    /// attestation the explorers contradicted (`e.Contradicted`, final fix A2 — the pending part is written). No .ots
+    /// is there with the entry's SHA-256 (another disk at the same path never gets it). Of its Bitcoin attestations only
+    /// the anchor's (`e.BitcoinHeight` of a complete entry) go onto the disks — never one the explorers contradicted
+    /// (A2) or one nobody looked up yet (re-review: over the cap); before the proof is complete only the pending part
+    /// is written. No .ots
     /// yet → a new file; one with the same digest that `ots` contains and extends → replaced; one that contains `ots` →
     /// kept; one with the same digest that neither contains (another stamp's branch) → the union of both (B2), and
     /// `ots` gets what that disk had; anything else (another digest, not a timestamp) → kept as it is and logged.
@@ -392,8 +405,11 @@ public sealed class ProofService : IDisposable
         {
             e.Normalise();
             if (!TryDigest(e, out var digest) || !ValidManifestName(e.Manifest) || !ots.Digest.AsSpan().SequenceEqual(digest)) return false;
-            var write = e.Contradicted is { Count: > 0 } contradicted ? ots.WithoutBitcoin(contradicted) : ots;
-            if (write == null) return false;   // nothing but contradicted attestations
+            var write = e.State == ProofState.Complete
+                ? e.BitcoinHeight is { } anchor ? ots.WithoutBitcoin(h => h != anchor)
+                    : e.Contradicted is { Count: > 0 } contradicted ? ots.WithoutBitcoin(contradicted) : ots
+                : ots.WithoutBitcoin(_ => true);
+            if (write == null) return false;   // nothing that may go onto a disk yet
             var bytes = write.ToBytes();
             using var held = NamedLock.Acquire(DiskLockName, DiskLockTimeout);
             if (held == null)
@@ -600,8 +616,9 @@ public sealed class ProofService : IDisposable
             var first = await BitcoinHeaders.Verify(http, ots, options.HeaderSources, options.Timeout, ct, notes.Add).ConfigureAwait(false);
             if (first.Outcome == BitcoinOutcome.Verified) return $"anchored already (Bitcoin block {first.Height})";
             contradicted.UnionWith(first.Contradicted);
-            if (Uncontradicted(ots, contradicted) is { } standing) return $"anchored already (Bitcoin block {standing})";
-            bad = $"its Bitcoin attestation does not match block {contradicted.Min}; ";   // every one contradicted: as pending
+            if (Unchecked(first, contradicted) is { } standing) return $"anchored already (Bitcoin block {standing})";
+            // every block looked up contradicted (one over the cap was not looked up and says nothing): as pending
+            bad = $"its Bitcoin attestation does not match block {contradicted.Min}; ";
         }
         var pending = ots.Timestamp.All().Select(p => p.Attestation).OfType<PendingAttestation>().Select(p => p.Uri).Distinct().ToList();
         int asked = pending.Count(u => Allowed(u));
@@ -612,21 +629,23 @@ public sealed class ProofService : IDisposable
             return bad + $"not in Bitcoin yet ({Calendars(asked)} asked) — Bitcoin confirms a few hours after the copy" + (notes.Count > 0 ? $" ({string.Join("; ", notes)})" : "");
 
         string what;
-        if (Uncontradicted(ots, contradicted) != null)
+        ulong? anchor = null;
+        if (BitcoinHeights(ots).Any(h => !contradicted.Contains(h)))
         {
-            var check = await BitcoinHeaders.Verify(http, ots, options.HeaderSources, options.Timeout, ct, notes.Add).ConfigureAwait(false);
+            var check = await BitcoinHeaders.Verify(http, ots, options.HeaderSources, options.Timeout, ct, notes.Add, skip: contradicted).ConfigureAwait(false);
             contradicted.UnionWith(check.Contradicted);
-            if (check.Outcome == BitcoinOutcome.Verified) contradicted.Remove(check.Height!.Value);
-            if (check.Outcome != BitcoinOutcome.Verified && Uncontradicted(ots, contradicted) == null)
+            anchor = check.Outcome == BitcoinOutcome.Verified ? check.Height : Unchecked(check, contradicted);
+            if (anchor == null)
                 return $"a calendar returned a Bitcoin attestation that does not match block {check.Height} — left as it is";
             what = check.Outcome == BitcoinOutcome.Verified
-                ? $"anchored in Bitcoin block {check.Height} ({ProofVerifier.Agree(check.Sources)})"
-                : $"anchored in Bitcoin block {Uncontradicted(ots, contradicted)} (block not checked: {check.Problem})";
+                ? $"anchored in Bitcoin block {anchor} ({ProofVerifier.Agree(check.Sources)})"
+                : $"anchored in Bitcoin block {anchor} (block not checked" + (check.Outcome == BitcoinOutcome.NotChecked ? $": {check.Problem})" : ")");
         }
         else what = bad + $"more of the path to Bitcoin ({added} of {Calendars(asked)} answered), not in Bitcoin yet";
 
-        // Never a contradicted attestation the file did not have yet (one it had stays: the rule only adds).
-        var write = ots.WithoutBitcoin([.. contradicted.Where(h => !had.Contains(h))]) ?? ots;
+        // Of the new Bitcoin attestations only the anchor's — never a contradicted one, never one nobody looked up (one
+        // the file had stays: the rule only adds).
+        var write = ots.WithoutBitcoin(h => h != anchor && !had.Contains(h)) ?? ots;
         var wrote = new List<string>();
         using (var held = NamedLock.Acquire(DiskLockName, DiskLockTimeout))
         {
@@ -638,10 +657,6 @@ public sealed class ProofService : IDisposable
         // PutOts says what it did, except when the file holds all of it already (another mmMover was quicker).
         return $"{what} — " + (wrote.Count == 0 ? "the file has it already" : string.Join("; ", wrote));
     }
-
-    /// The lowest Bitcoin height of `f` not in `contradicted`; null when none.
-    static ulong? Uncontradicted(OtsFile f, IReadOnlySet<ulong> contradicted) =>
-        BitcoinHeights(f).Where(h => !contradicted.Contains(h)).Select(h => (ulong?)h).Min();
 
     bool Allowed(string uri)
     {

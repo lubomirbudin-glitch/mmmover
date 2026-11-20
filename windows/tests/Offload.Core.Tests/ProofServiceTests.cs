@@ -55,6 +55,10 @@ public class ProofServiceTests
         int posts;
         /// The messages this calendar attested in Bitcoin (what a block's merkle root has to be).
         public readonly ConcurrentQueue<byte[]> Attested = new();
+        /// Set: the answer is one branch per height instead — m → append(i) → sha256 → Bitcoin(Heights[i]); Branch[i] =
+        /// that branch's message (a hostile calendar handing out attestations at many blocks).
+        public ulong[]? Heights;
+        public readonly ConcurrentDictionary<int, byte[]> Branch = new();
 
         public Calendar(int i, ulong height = Height)
         {
@@ -83,6 +87,17 @@ public class ProofServiceTests
             {
                 if (!Confirmed) return Reply(c, 404, "Pending confirmation in Bitcoin blockchain"u8.ToArray());
                 var m = Convert.FromHexString(path["/timestamp/".Length..]);
+                if (Heights is { } heights)
+                {
+                    var body = new List<byte>();
+                    for (int i = 0; i < heights.Length; i++)
+                    {
+                        Branch[i] = SHA256.HashData([.. m, (byte)i]);
+                        if (i < heights.Length - 1) body.Add(0xff);
+                        body.AddRange([0xf0, 0x01, (byte)i, 0x08, .. BitcoinBytes(heights[i])]);
+                    }
+                    return Reply(c, 200, [.. body]);
+                }
                 Attested.Enqueue(SHA256.HashData([.. m, .. DeadBeef]));
                 return Reply(c, 200, [0xf0, 0x04, .. DeadBeef, 0x08, .. BitcoinBytes(height)]);
             }
@@ -119,6 +134,8 @@ public class ProofServiceTests
         }
 
         public string Url => http.Url.TrimEnd('/');
+        /// How often block `height` was looked up here.
+        public int Asked(ulong height) => http.Requests.Count(r => r.Path == $"/block-height/{height}");
         public void Dispose() => http.Dispose();
     }
 
@@ -661,6 +678,123 @@ public class ProofServiceTests
         }
         var stored = OtsFile.Parse(rig.Store.ReadOts(e.Id)!).Timestamp.All().Select(p => p.Attestation).OfType<BitcoinAttestation>();
         Assert.Equal([Height, Height2], stored.Select(b => b.Height).Order());   // the store keeps both
+    }
+
+    static ulong[] Fakes(int n) => [.. Enumerable.Range(0, n).Select(i => 800_000UL + (ulong)i)];
+
+    /// Explorers that know every fake block (each with a merkle root none of the fakes has) and, when given, the real one
+    /// with the merkle root of calendar A's branch `realBranch`.
+    static string[] FakeBlocks(Rig rig, ulong[] fakes, ulong? real = null, int realBranch = 0)
+    {
+        var roots = fakes.ToDictionary(h => h, h => (Func<byte[]>)(() => SHA256.HashData(Encoding.ASCII.GetBytes($"block {h}"))));
+        if (real is { } r) roots[r] = () => rig.A.Branch.TryGetValue(realBranch, out var m) ? m : new byte[32];
+        return rig.Sources(roots);
+    }
+
+    static ulong[] DiskHeights(string card) =>
+        [.. DiskOts(card).Timestamp.All().Select(p => p.Attestation).OfType<BitcoinAttestation>().Select(b => b.Height).Order()];
+
+    // Re-review of the fix wave (regression vs R8): a hostile calendar with 17 fake Bitcoin attestations at 17 blocks —
+    // the explorers (honest) contradict each. A check looks up only 16 heights; the 17th, never looked up, must not
+    // complete the proof (nor reach a disk); the next pass skips the 16 contradicted ones and checks it.
+    [Fact]
+    public async Task SeventeenFakeHeights_NeverCompleteOnAnUncheckedOne()
+    {
+        using var rig = new Rig();
+        var manifest = Manifest();
+        string c1 = rig.Card("d1", manifest);
+        var e = rig.Add(manifest, c1);
+        var fakes = Fakes(17);
+        using var service = rig.Service(FakeBlocks(rig, fakes));
+        Assert.Equal(ProofState.Pending, Assert.Single(await service.RunDue(default)).State);
+        rig.A.Heights = fakes;
+        rig.A.Confirmed = true;
+        rig.Clock.Now = T0.AddHours(1);
+
+        var first = Assert.Single(await service.RunDue(default));
+
+        Assert.Equal(ProofState.Pending, first.State);
+        Assert.Null(first.BitcoinHeight);
+        Assert.Equal(fakes[..16], first.Contradicted!);
+        Assert.Equal(["pending"], first.Written);
+        Assert.Empty(DiskHeights(c1));   // the disk keeps the pending proof: no unchecked attestation on it
+        Assert.Equal(17, OtsFile.Parse(rig.Store.ReadOts(e.Id)!).Timestamp.All().Count(p => p.Attestation is BitcoinAttestation));
+
+        rig.Clock.Now = first.NextCheck!.Value;
+        int asked = rig.Explorers.Sum(x => x.Asked(fakes[16]));
+        var second = Assert.Single(await service.RunDue(default));
+
+        Assert.Equal(ProofState.Pending, second.State);
+        Assert.Equal(fakes, second.Contradicted!);
+        Assert.True(rig.Explorers.Sum(x => x.Asked(fakes[16])) > asked);   // the 17th was looked up now
+        Assert.All(fakes[..16], h => Assert.Equal(1, rig.Explorers.Max(x => x.Asked(h))));   // the others never again
+        Assert.Empty(DiskHeights(c1));
+    }
+
+    // The same with 16 fake low blocks and one real higher one: complete at the real one (checked, with its time) on the
+    // second pass, never on the first while it was not looked up; the disk gets no fake attestation.
+    [Fact]
+    public async Task SixteenFakesAndOneRealHigher_CompleteAtTheRealOne()
+    {
+        using var rig = new Rig();
+        var manifest = Manifest();
+        string c1 = rig.Card("d1", manifest);
+        var e = rig.Add(manifest, c1);
+        var fakes = Fakes(16);
+        const ulong Real = 800_100;
+        using var service = rig.Service(FakeBlocks(rig, fakes, Real, realBranch: 16));
+        Assert.Equal(ProofState.Pending, Assert.Single(await service.RunDue(default)).State);
+        rig.A.Heights = [.. fakes, Real];
+        rig.A.Confirmed = true;
+        rig.Clock.Now = T0.AddHours(1);
+
+        var first = Assert.Single(await service.RunDue(default));
+        Assert.Equal(ProofState.Pending, first.State);
+        Assert.Empty(DiskHeights(c1));
+
+        rig.Clock.Now = first.NextCheck!.Value;
+        var done = Assert.Single(await service.RunDue(default));
+
+        Assert.Equal(ProofState.Complete, done.State);
+        Assert.Equal((Real, BlockTime), (done.BitcoinHeight, done.BitcoinTime));
+        Assert.Equal(fakes, done.Contradicted!);
+        Assert.Equal(["complete"], done.Written);
+        Assert.Equal([Real], DiskHeights(c1));
+    }
+
+    // The C3 re-check the same: complete while the explorers were down (at the lowest fake block, not checked), checked
+    // again later — 16 contradicted, the 17th not looked up: not anchored after all (pending), never "anchored" at a block
+    // nobody looked up; the next pass looks it up.
+    [Fact]
+    public async Task Recheck_NeverMovesTheAnchorToABlockItDidNotLookUp()
+    {
+        using var rig = new Rig();
+        var manifest = Manifest();
+        string c1 = rig.Card("d1", manifest);
+        rig.Add(manifest, c1);
+        var fakes = Fakes(17);
+        using (var down = rig.Service())
+        {
+            Assert.Single(await down.RunDue(default));
+            rig.A.Heights = fakes;
+            rig.A.Confirmed = true;
+            rig.Clock.Now = T0.AddHours(1);
+            var done = Assert.Single(await down.RunDue(default));
+            Assert.Equal((ProofState.Complete, (ulong?)fakes[0], (DateTime?)null), (done.State, done.BitcoinHeight, done.BitcoinTime));
+        }
+        using var honest = rig.Service(FakeBlocks(rig, fakes));
+        rig.Clock.Now = T0.AddHours(2);
+
+        var back = Assert.Single(await honest.RunDue(default));
+
+        Assert.Equal(ProofState.Pending, back.State);
+        Assert.Null(back.BitcoinHeight);
+        Assert.Equal(fakes[..16], back.Contradicted!);
+
+        rig.Clock.Now = back.NextCheck!.Value;
+        var again = Assert.Single(await honest.RunDue(default));
+        Assert.Equal(ProofState.Pending, again.State);
+        Assert.Equal(fakes, again.Contradicted!);
     }
 
     // Final fix C3: complete while the explorers were down (block time unknown) → the block is checked again later

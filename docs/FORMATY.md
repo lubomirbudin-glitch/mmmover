@@ -382,7 +382,11 @@ poslední, atestace `0x00` + 8bajtový tag + varbytes payload; tagy Pending `83d
 LEB128 varuint). Operace SHA-256, SHA-1, RIPEMD-160 (staré oficiální soubory ji používají), append, prepend; Keccak,
 reverse a hexlify čtečka odmítne. Limity (mmMover i `verify_proof.py`): soubor nejvýš 4 MB, hloubka 255 operací, zpráva
 a argument 4096 B, payload 8192 B, uri 1000 znaků. Nepřátelský `.ots` stojí nejvýš 16 různých kalendářů na jeden upgrade
-a 16 různých výšek bloků (nejnižších) na jednu kontrolu — co se vynechá, jde do logu (ověřovač `Warning:`).
+a 16 různých výšek bloků (nejnižších) na jednu kontrolu — co se vynechá, jde do logu (ověřovač `Warning:`). Výška, na
+kterou se kontrola kvůli limitu nedostala, neříká nic: záznam fronty se dokončí jen ověřenou atestací, nebo atestací
+výšky, kterou kontrola skutečně hledala a hlavičku nedostala (průzkumníci nedostupní) — nikdy atestací za limitem; fronta
+výšky vyvrácené dřív už nehledá (`contradicted`), takže se okno 16 výšek při dalším průchodu posune výš. Na disky jdou
+z Bitcoin atestací jen ty u kotvy dokončeného záznamu (`bitcoin.height`); dokud záznam dokončený není, jen pending část.
 
 **Soubor v záloze, který se smí nahradit** (vedle `<karta>.xxh64`/`.md5`, `ascmhl_chain.xml` a odvozených souborů): `.ots`
 se nahradí jen **striktně úplnějším** souborem — nový míří na stejný digest a obsahuje každou atestaci starého (upgrade jen

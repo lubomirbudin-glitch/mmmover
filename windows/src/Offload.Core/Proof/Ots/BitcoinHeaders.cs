@@ -70,10 +70,14 @@ public enum BitcoinOutcome { Verified, Mismatch, NotChecked, NoAttestation }
 
 /// `Time` = the block's time when Verified; `Sources` = the sources whose header was used; `Problem` = why not Verified.
 /// `Contradicted` = the heights whose header the sources gave and whose merkle root none of the file's attestations at
-/// that height has (final fix A2: such an attestation never anchors a proof), lowest first.
+/// that height has (final fix A2: such an attestation never anchors a proof), lowest first. `Checked` = every height
+/// this check looked up, lowest first — a height it did not look up (over the MaxHeights cap, or skipped) says nothing,
+/// so only a checked one that is neither contradicted nor verified (no header could be had) may stand as an unchecked
+/// anchor.
 public sealed record BitcoinCheck(BitcoinOutcome Outcome, ulong? Height, DateTime? Time, IReadOnlyList<string> Sources, string? Problem)
 {
     public IReadOnlyList<ulong> Contradicted { get; init; } = [];
+    public IReadOnlyList<ulong> Checked { get; init; } = [];
 }
 
 /// Block headers from public explorers (Esplora API), checked against each other — no Bitcoin node needed. A source
@@ -123,9 +127,11 @@ public static class BitcoinHeaders
     /// Checks the Bitcoin attestations of `file`, lowest height first, as the reference client: the first whose
     /// message is the block's merkle root → Verified (one is enough). Otherwise Mismatch when a block's merkle root
     /// differs, NotChecked when no header could be had (sources down or in conflict — the problem names why each source
-    /// failed); NoAttestation (nothing asked) when the file has no Bitcoin attestation. At most MaxHeights distinct
-    /// heights (the lowest) are looked up; `note` is told when more were left out.
-    public static async Task<BitcoinCheck> Verify(HttpClient http, OtsFile file, IReadOnlyList<string> sources, TimeSpan timeout, CancellationToken ct, Action<string>? note = null)
+    /// failed); NoAttestation (nothing asked) when the file has no Bitcoin attestation — or none but at the heights to
+    /// `skip`. `skip`: heights not to look up (the queue's contradicted ones), so the window of at most MaxHeights
+    /// distinct heights (the lowest of the rest) moves up past them; `note` is told when heights were left out.
+    public static async Task<BitcoinCheck> Verify(HttpClient http, OtsFile file, IReadOnlyList<string> sources, TimeSpan timeout, CancellationToken ct,
+        Action<string>? note = null, IReadOnlyCollection<ulong>? skip = null)
     {
         var claims = file.Timestamp.All()
             .Where(p => p.Attestation is BitcoinAttestation)
@@ -133,6 +139,11 @@ public static class BitcoinHeaders
             .OrderBy(c => c.Height)
             .ToList();
         if (claims.Count == 0) return new(BitcoinOutcome.NoAttestation, null, null, [], "the proof has no Bitcoin attestation yet");
+        if (skip is { Count: > 0 })
+        {
+            claims = [.. claims.Where(c => !skip.Contains(c.Height))];
+            if (claims.Count == 0) return new(BitcoinOutcome.NoAttestation, null, null, [], "every Bitcoin attestation of the proof is at a block contradicted before");
+        }
         var heights = claims.Select(c => c.Height).Distinct().ToList();
         if (heights.Count > MaxHeights)
         {
@@ -153,10 +164,13 @@ public static class BitcoinHeaders
                 continue;
             }
             if (message.AsSpan().SequenceEqual(look.Header.MerkleRoot))
-                return new(BitcoinOutcome.Verified, height, look.Header.Time, look.Agreed, null) { Contradicted = Contradicted(lookups, except: height) };
+                return new(BitcoinOutcome.Verified, height, look.Header.Time, look.Agreed, null)
+                {
+                    Contradicted = Contradicted(lookups, except: height), Checked = [.. lookups.Keys.Order()],
+                };
             mismatch ??= new(BitcoinOutcome.Mismatch, height, null, look.Agreed, $"the merkle root of block {height} does not match the proof");
         }
-        return (mismatch ?? notChecked!) with { Contradicted = Contradicted(lookups, except: null) };
+        return (mismatch ?? notChecked!) with { Contradicted = Contradicted(lookups, except: null), Checked = [.. lookups.Keys.Order()] };
     }
 
     /// Every height looked up whose header the sources gave (claims run lowest first and stop at the first match, so

@@ -632,6 +632,31 @@ public class OtsNetworkTests
         Assert.Equal(BitcoinOutcome.NotChecked, check.Outcome);
         Assert.Equal(Enumerable.Range(800_000, 16).Select(h => $"/block-height/{h}"), e1.Requests.Select(r => r.Path).Order(StringComparer.Ordinal));
         Assert.Equal(["the .ots has Bitcoin attestations at 40 heights — only the lowest 16 were checked"], notes);
+        Assert.Equal(Enumerable.Range(800_000, 16).Select(h => (ulong)h), check.Checked);
+    }
+
+    // Re-review of the fix wave: the heights to skip (contradicted before) are never looked up — the 16-height window moves
+    // up past them; every height skipped: nothing asked at all.
+    [Fact]
+    public async Task Verify_SkippedHeights_NotLookedUp_TheWindowMovesUp()
+    {
+        using var http = Client();
+        using var e1 = new Fake((_, c) => Reply(c, 404, "Block not found"u8.ToArray()));
+        var f = OtsFile.For(SHA256.HashData("heights"u8));
+        for (int i = 0; i < 40; i++) f.Timestamp.Add(OtsOp.Append([(byte)i])).Add(new BitcoinAttestation(800_000 + (ulong)i));
+        var skip = Enumerable.Range(800_000, 16).Select(h => (ulong)h).ToList();
+
+        var check = await BitcoinHeaders.Verify(http, f, [e1.Url], Patient, default, skip: skip);
+
+        Assert.Equal(BitcoinOutcome.NotChecked, check.Outcome);
+        Assert.Equal(800_016UL, check.Height);
+        Assert.Equal(Enumerable.Range(800_016, 16).Select(h => $"/block-height/{h}"), e1.Requests.Select(r => r.Path).Order(StringComparer.Ordinal));
+        Assert.Equal(Enumerable.Range(800_016, 16).Select(h => (ulong)h), check.Checked);
+
+        var all = await BitcoinHeaders.Verify(http, f, [e1.Url], Patient, default, skip: [.. Enumerable.Range(800_000, 40).Select(h => (ulong)h)]);
+        Assert.Equal(BitcoinOutcome.NoAttestation, all.Outcome);
+        Assert.Empty(all.Checked);
+        Assert.Equal(16, e1.Requests.Count);   // nothing more asked
     }
 
     [Fact]
