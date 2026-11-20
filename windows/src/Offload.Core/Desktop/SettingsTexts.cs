@@ -18,6 +18,14 @@ public static class SettingsTexts
     public const string ProofLabel = "Offload Proof — anchor every offload in time";
     public const string ProofNote = "Only a fingerprint (hash) leaves this computer, never files or names. Free (OpenTimestamps, Bitcoin).";
 
+    /// Final fix A1: under the switch (and once per CLI job with the proof on) on a CPU without SHA instructions — the
+    /// measured SHA-256 rate, to 50 MB/s (at least 50).
+    public static string ProofSlowCpuNote(double mbps)
+    {
+        var rounded = Math.Max(50, Math.Round(mbps / 50, MidpointRounding.AwayFromZero) * 50);
+        return $"This computer has no SHA instructions: Offload Proof hashes about {rounded.ToString("N0", System.Globalization.CultureInfo.InvariantCulture)} MB/s and can slow cards that read faster than that.";
+    }
+
     /// Disks loaded automatically (2026-10-09), Settings → Folder structure.
     public const string AutoDestinationsLabel = "Automatically add connected disks as destinations";
     public const string AutoDestinationsNote =

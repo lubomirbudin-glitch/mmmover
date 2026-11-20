@@ -101,6 +101,8 @@ static class CopyCommand
         // Only when proxies or clip analysis (thumbnails) are on — otherwise no LUT is used at all.
         if (LutOption.PlanLine(config.Proxy, config.AnalyzeClips) is string lutLine) Console.WriteLine(lutLine);
         var job = JobFactory(config);
+        // Final fix A1: with the proof on a CPU without SHA instructions, how fast it hashes — measured while the job plans.
+        var slowSha = config.Proof && !dryRun && !ProofHardware.HasShaInstructions ? Task.Run(ProofHardware.MeasureSha256MBps) : null;
         OffloadPlan? plan = null;
         try
         {
@@ -154,6 +156,7 @@ static class CopyCommand
             }
         }
         if (dryRun) return 0;
+        if (slowSha != null) Console.WriteLine("Proof: " + SettingsTexts.ProofSlowCpuNote(slowSha.GetAwaiter().GetResult()));
 
         Console.CancelKeyPress += (_, e) =>
         {
@@ -221,9 +224,10 @@ static class CopyCommand
     internal static Option<bool> NoProofOption() =>
         new("--no-proof") { Description = "No Offload Proof: no SHA-256 of the files, no proof manifest, nothing sent to the timestamp calendars." };
 
-    /// The proof is on unless --no-proof is given or the project (--project) switched it off; without --project it is on.
+    /// The proof is on unless --no-proof is given or the project (--project) switched it off; without --project — and
+    /// for a project that never stored the switch — it is on where the CPU has SHA instructions (final fix A1, as the app).
     internal static bool ProofOn(ParseResult r, Option<bool> noProof, SettingsProfile? profile) =>
-        !r.GetValue(noProof) && (profile?.Proof.Enabled ?? true);
+        !r.GetValue(noProof) && (profile?.Proof.Enabled ?? ProofHardware.HasShaInstructions);
 
     /// Plan 11 (design 10): how long the CLI stamps the proof of its job right after it.
     internal static readonly TimeSpan ProofWait = TimeSpan.FromSeconds(20);

@@ -17,12 +17,14 @@ public sealed class NamingSettings
     [JsonExtensionData] public Dictionary<string, JsonElement>? Extra { get; set; }
 }
 
-/// "proof" in settings.json (plan 11, design 9): Offload Proof — on by default.
+/// "proof" in settings.json (plan 11, design 9): Offload Proof — on by default where the CPU has SHA instructions.
 public sealed class ProofSettings
 {
     /// Every offload gets a proof (SHA-256 of every file in the card read, the manifest in `_REPORT`, anchored with
-    /// OpenTimestamps); off = no SHA-256 is computed at all.
-    [JsonPropertyName("enabled")] public bool Enabled { get; set; } = true;
+    /// OpenTimestamps); off = no SHA-256 is computed at all. Not stored (first run, an older version's settings, a
+    /// project without the section): on with SHA instructions, off without (final fix A1, ruling R12 — software SHA-256
+    /// would slow a fast card); a stored value always wins.
+    [JsonPropertyName("enabled")] public bool Enabled { get; set; } = Proof.ProofHardware.HasShaInstructions;
 
     /// Keys of this section a newer version wrote: kept and written back (R24).
     [JsonExtensionData] public Dictionary<string, JsonElement>? Extra { get; set; }

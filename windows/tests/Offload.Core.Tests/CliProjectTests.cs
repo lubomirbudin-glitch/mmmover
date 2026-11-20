@@ -88,6 +88,34 @@ public class CliProjectTests
         Assert.All(seen, c => Assert.Null(c.ProofFolder));   // the default queue
     }
 
+    // Final fix A1: the CLI's default follows the CPU as the app's — without --project, or a project without a stored
+    // switch, the proof is off on a CPU without SHA instructions; a stored switch wins. With the proof on such a CPU the
+    // job says once how fast this computer hashes.
+    [Fact]
+    public void Proof_DefaultFollowsTheCpu_RateSaidOncePerJob()
+    {
+        using var dir = new TempDir();
+        var dest = dir.Sub("dest");
+        var folder = dir.Sub("appdata");
+        File.WriteAllText(Path.Combine(folder, "settings.json"),
+            """{"projects":[{"name":"Old","destRoots":[DEST]},{"name":"On","destRoots":[DEST],"proof":{"enabled":true}}]}"""
+                .Replace("DEST", System.Text.Json.JsonSerializer.Serialize(dest)));
+        var card = Card(dir);
+        var seen = new List<JobConfig>();
+        using (Offload.Core.Proof.ProofHardware.Force(hasSha: false, mbps: 437))
+        {
+            Run(folder, seen, CopyCommand.Create(), card, "-d", dest, "--no-history", "--dry-run");
+            Run(folder, seen, CopyCommand.Create(), card, "--project", "Old", "--no-history", "--dry-run");
+            var on = Run(folder, seen, CopyCommand.Create(), card, "--project", "On", "--no-history", "--no-analyze", "--date", "2026-11-19");
+            Assert.Equal(1, on.Out.Split(Environment.NewLine).Count(l => l.Contains("no SHA instructions", StringComparison.Ordinal)));
+            Assert.True(on.Out.Contains("Proof: This computer has no SHA instructions: Offload Proof hashes about 450 MB/s and can slow cards that read faster than that.", StringComparison.Ordinal), on.Out);
+        }
+        var fast = Run(folder, seen, CopyCommand.Create(), card, "-d", dest, "--no-history", "--dry-run");
+        Assert.DoesNotContain("SHA instructions", fast.Out);
+
+        Assert.Equal([false, false, true, true], seen.Select(c => c.Proof));
+    }
+
     [Fact]
     public void Project_GivesTheDefaults_ReportNamesIt()
     {

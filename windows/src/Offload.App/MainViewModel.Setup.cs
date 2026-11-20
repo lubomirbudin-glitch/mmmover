@@ -572,6 +572,29 @@ public sealed partial class MainViewModel
         set { Settings.Proof.Enabled = value; SettingsChanged(); Raise(); }
     }
 
+    double? proofRate;
+    bool proofRateAsked;
+
+    /// Final fix A1: under the switch on a CPU without SHA instructions, how fast this one hashes — measured once, off
+    /// the UI thread (null until then, and always with SHA instructions).
+    public string? ProofSpeedNote
+    {
+        get
+        {
+            if (Offload.Core.Proof.ProofHardware.HasShaInstructions) return null;
+            if (proofRate is { } rate) return SettingsTexts.ProofSlowCpuNote(rate);
+            if (!proofRateAsked)
+            {
+                proofRateAsked = true;
+                Task.Run(Offload.Core.Proof.ProofHardware.MeasureSha256MBps).ContinueWith(t =>
+                {
+                    if (t.IsCompletedSuccessfully) Dispatch(() => { proofRate = t.Result; Raise(nameof(ProofSpeedNote)); });
+                }, TaskScheduler.Default);
+            }
+            return null;
+        }
+    }
+
     /// "Checksum" (spec 3.5): xxHash64 or xxHash64 + MD5 — `hash` in settings.json.
     public IReadOnlyList<HashChoice> HashChoices => HashChoice.All;
 

@@ -116,6 +116,27 @@ public class SettingsStoreTests
         }
     }
 
+    // Final fix A1 (ruling R12): without a stored `proof.enabled` (first run, settings of an older version, a project
+    // without the section) the switch follows the CPU — on with SHA instructions, off without; a stored value wins.
+    [Fact]
+    public void Proof_DefaultFollowsTheCpu_StoredValueWins()
+    {
+        using var dir = new TempDir();
+        foreach (var fast in new[] { true, false })
+        {
+            using var cpu = Offload.Core.Proof.ProofHardware.Force(hasSha: fast);
+            Assert.Equal(fast, SettingsStore.Load(Path.Combine(dir.Path, "none.json")).Proof.Enabled);
+            var old = LoadJson(dir, """{"verify":true,"projects":[{"name":"Film X"}]}""");
+            Assert.Equal(fast, old.Proof.Enabled);
+            Assert.Equal(fast, old.Projects[0].Proof.Enabled);
+            Assert.Equal(fast, LoadJson(dir, """{"proof":{"x":1}}""").Proof.Enabled);
+            Assert.Equal(fast, new AppSettings().Proof.Enabled);
+            var stored = LoadJson(dir, """{"proof":{"enabled":true},"projects":[{"name":"Film X","proof":{"enabled":false}}]}""");
+            Assert.True(stored.Proof.Enabled);
+            Assert.False(stored.Projects[0].Proof.Enabled);
+        }
+    }
+
     // Plan 11: a project made from the shown profile takes its proof switch (a copy of its own).
     [Fact]
     public void Proof_CopiedIntoANewProject()

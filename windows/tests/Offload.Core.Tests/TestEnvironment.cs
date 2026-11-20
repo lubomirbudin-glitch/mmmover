@@ -44,6 +44,10 @@ static class TestEnvironment
         // Synthetic block headers (OtsNetworkTests.Mine, regtest difficulty) pass the proof-of-work check of the faked
         // explorers; a real header passes either way, and HasProofOfWork(MainnetPowLimit) tests Bitcoin's own limit.
         Offload.Core.Proof.Ots.BitcoinHeaders.PowLimitOverride = OtsNetworkTests.RegtestPowLimit;
+        // Final fix A1: every test machine has SHA instructions (the proof switch is on by default, as on the machines the
+        // tests were written for) and hashes 1 000 MB/s — a test that wants a slow CPU says so (ProofHardware.Force).
+        ProofHardware.ShaOverride = true;
+        ProofHardware.RateOverride = 1000;
     }
 #pragma warning restore CA2255
 }
@@ -75,5 +79,7 @@ public class TestEnvironmentTests
         Assert.False(v.Offline);
         Assert.Equal(["https://blockstream.info/api", "https://mempool.space/api"], new ProofVerifyOptions().HeaderSources);
         Assert.Equal(TimeSpan.FromSeconds(10), new ProofVerifyOptions().Timeout);
+        Assert.True(ProofHardware.HasShaInstructions);
+        Assert.Equal(1000, ProofHardware.MeasureSha256MBps());
     }
 }
