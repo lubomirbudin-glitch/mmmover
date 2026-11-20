@@ -143,7 +143,8 @@ public sealed class ProofService : IDisposable
         var now = options.Now();
         if (r.File is not { } stamped)
         {
-            var why = $"stamp failed at {r.Failed.Count} of {options.Calendars.Count} calendars ({r.Accepted.Count} accepted, {Math.Max(1, options.Minimum)} needed)";
+            var why = $"stamp failed at {r.Failed.Count} of {options.Calendars.Count} calendars ({r.Accepted.Count} accepted, {Math.Max(1, options.Minimum)} needed)"
+                + (r.Reasons.Count > 0 ? ": " + string.Join("; ", r.Reasons) : "");
             var failed = Saved(store.Update(e.Id, cur =>
             {
                 if (cur.State != ProofState.Queued) return null;   // another service stamped it meanwhile
@@ -193,9 +194,11 @@ public sealed class ProofService : IDisposable
             return;
         }
 
-        int added = await OtsCalendar.Upgrade(http, ots, options.AllowedCalendar, options.Timeout, ct).ConfigureAwait(false);
-        var check = ots.IsComplete ? await BitcoinHeaders.Verify(http, ots, options.HeaderSources, options.Timeout, ct).ConfigureAwait(false) : null;
+        var notes = new List<string>();   // why calendars failed (a 404 is no failure), what a cap left out
+        int added = await OtsCalendar.Upgrade(http, ots, options.AllowedCalendar, options.Timeout, ct, notes.Add).ConfigureAwait(false);
+        var check = ots.IsComplete ? await BitcoinHeaders.Verify(http, ots, options.HeaderSources, options.Timeout, ct, notes.Add).ConfigureAwait(false) : null;
         var now = options.Now();
+        var asking = notes.Count > 0 ? "asking the calendars: " + string.Join("; ", notes) : null;
 
         var saved = Saved(store.Update(e.Id, cur =>
         {
@@ -221,7 +224,7 @@ public sealed class ProofService : IDisposable
                     break;
                 default:
                     cur.NextCheck = NextUpgrade(cur.StampedAt ?? now, now);
-                    cur.LastError = null;
+                    cur.LastError = asking;
                     break;
             }
             return cur;
@@ -237,7 +240,7 @@ public sealed class ProofService : IDisposable
                 + (check.Outcome == BitcoinOutcome.Verified ? $" ({string.Join(", ", check.Sources)} agree)" : $" (block not checked: {check.Problem})"));
         else if (saved.State == ProofState.Pending)
             Log($"{Who(e)}: upgrade: " + (added == 0 ? "no new attestation yet" : $"{added} calendar(s) answered, not in Bitcoin yet")
-                + $" — asked again {saved.NextCheck:yyyy-MM-dd HH:mm} UTC");
+                + (asking != null ? $" ({asking})" : "") + $" — asked again {saved.NextCheck:yyyy-MM-dd HH:mm} UTC");
         Disks(e.Id);
     }
 
@@ -470,13 +473,15 @@ public sealed class ProofService : IDisposable
         int asked = pending.Count(u => Allowed(u));
         if (asked == 0) return pending.Count == 0 ? "no calendar to ask — left as it is" : "none of its calendars is a public OpenTimestamps calendar — left as it is";
 
-        int added = await OtsCalendar.Upgrade(http, ots, options.AllowedCalendar, options.Timeout, ct).ConfigureAwait(false);
-        if (added == 0) return $"not in Bitcoin yet ({Calendars(asked)} asked) — Bitcoin confirms a few hours after the copy";
+        var notes = new List<string>();
+        int added = await OtsCalendar.Upgrade(http, ots, options.AllowedCalendar, options.Timeout, ct, notes.Add).ConfigureAwait(false);
+        if (added == 0)
+            return $"not in Bitcoin yet ({Calendars(asked)} asked) — Bitcoin confirms a few hours after the copy" + (notes.Count > 0 ? $" ({string.Join("; ", notes)})" : "");
 
         string what;
         if (ots.IsComplete)
         {
-            var check = await BitcoinHeaders.Verify(http, ots, options.HeaderSources, options.Timeout, ct).ConfigureAwait(false);
+            var check = await BitcoinHeaders.Verify(http, ots, options.HeaderSources, options.Timeout, ct, notes.Add).ConfigureAwait(false);
             if (check.Outcome == BitcoinOutcome.Mismatch)
                 return $"a calendar returned a Bitcoin attestation that does not match block {check.Height} — left as it is";
             what = check.Outcome == BitcoinOutcome.Verified
@@ -485,16 +490,16 @@ public sealed class ProofService : IDisposable
         }
         else what = $"more of the path to Bitcoin ({added} of {Calendars(asked)} answered), not in Bitcoin yet";
 
-        var notes = new List<string>();
+        var wrote = new List<string>();
         using (var held = NamedLock.Acquire(DiskLockName, DiskLockTimeout))
         {
             if (held == null) return "another mmMover is writing proofs onto the disks — try again in a moment";
             // Again under the lock, right before the write (the network took a while; as WriteToDisk does).
             if (!File.Exists(manifest) || !Sha256Of(manifest).AsSpan().SequenceEqual(digest)) return notIts;
-            PutOts(path, digest, ots, ots.ToBytes(), notes.Add);
+            PutOts(path, digest, ots, ots.ToBytes(), wrote.Add);
         }
         // PutOts says what it did, except when the file holds all of it already (another mmMover was quicker).
-        return $"{what} — " + (notes.Count == 0 ? "the file has it already" : string.Join("; ", notes));
+        return $"{what} — " + (wrote.Count == 0 ? "the file has it already" : string.Join("; ", wrote));
     }
 
     bool Allowed(string uri)

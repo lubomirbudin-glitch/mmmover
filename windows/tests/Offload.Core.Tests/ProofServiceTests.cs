@@ -284,6 +284,8 @@ public class ProofServiceTests
             Assert.Equal(rig.Clock.Now.AddMinutes(minutes[Math.Min(tries, minutes.Length) - 1]), x.NextCheck);
             Assert.Equal(ProofService.NextStampTry(tries, rig.Clock.Now), x.NextCheck);
             Assert.Contains("stamp failed at 2 of 2 calendars", x.LastError);
+            // Final fix B1: and why, calendar by calendar
+            Assert.EndsWith($": {rig.A.Url}: HTTP 503; {rig.B.Url}: HTTP 503", x.LastError);
             Assert.False(File.Exists(OtsPath(c1)) || File.Exists(OtsPath(c2)));
             Assert.Null(rig.Store.ReadOts(e.Id));
             if (tries == 3) Assert.Empty(await service.RunDue(default));   // not due before its next try
@@ -310,7 +312,7 @@ public class ProofServiceTests
         Assert.Null(done.BitcoinTime);
         Assert.Equal(["complete", "complete"], done.Written);
         Assert.True(DiskOts(c1).IsComplete && DiskOts(c2).IsComplete);
-        Assert.Contains(rig.Log, l => l.Contains("stamp failed at 2 of 2 calendars", StringComparison.Ordinal));
+        Assert.Contains(rig.Log, l => l.Contains("stamp failed at 2 of 2 calendars", StringComparison.Ordinal) && l.Contains($"{rig.A.Url}: HTTP 503", StringComparison.Ordinal));
     }
 
     [Fact]

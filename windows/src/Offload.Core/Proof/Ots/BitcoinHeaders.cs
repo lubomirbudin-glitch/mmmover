@@ -59,8 +59,12 @@ public sealed record BlockHeader(ulong Height, byte[] Raw)
 }
 
 /// `Header` = the header every answering source gave; null when none answered or `Conflict` (two sources gave
-/// different headers). `Agreed` = the sources behind `Header`.
-public sealed record HeaderLookup(BlockHeader? Header, IReadOnlyList<string> Agreed, IReadOnlyList<string> Failed, bool Conflict);
+/// different headers). `Agreed` = the sources behind `Header`. `Reasons`: one line per failed source, in the order of
+/// `Failed` — `<source>: <why>`.
+public sealed record HeaderLookup(BlockHeader? Header, IReadOnlyList<string> Agreed, IReadOnlyList<string> Failed, bool Conflict)
+{
+    public IReadOnlyList<string> Reasons { get; init; } = [];
+}
 
 public enum BitcoinOutcome { Verified, Mismatch, NotChecked, NoAttestation }
 
@@ -84,6 +88,9 @@ public static class BitcoinHeaders
 
     public static BigInteger PowLimit => PowLimitOverride ?? MainnetPowLimit;
 
+    /// Distinct heights one Verify looks up at most, the lowest first (a hostile .ots could list thousands).
+    public const int MaxHeights = 16;
+
     /// GET `<src>/block-height/<h>` (64 hex digits) and `<src>/block/<hash>/header` (160 hex digits) at every source
     /// at once, each within `timeout`.
     public static async Task<HeaderLookup> Get(HttpClient http, ulong height, IReadOnlyList<string> sources, TimeSpan timeout, CancellationToken ct)
@@ -93,21 +100,27 @@ public static class BitcoinHeaders
 
         var answered = new List<(string Source, BlockHeader Header)>();
         var failed = new List<string>();
+        var reasons = new List<string>();
         for (int i = 0; i < sources.Count; i++)
         {
-            if (got[i] is { } h) answered.Add((sources[i], h));
-            else failed.Add(sources[i]);
+            if (got[i].Value is { } h) answered.Add((sources[i], h));
+            else
+            {
+                failed.Add(sources[i]);
+                reasons.Add($"{sources[i]}: {got[i].Error ?? "no answer"}");
+            }
         }
-        if (answered.Count == 0) return new(null, [], failed, false);
-        if (answered.Any(a => !a.Header.Raw.AsSpan().SequenceEqual(answered[0].Header.Raw))) return new(null, [], failed, true);
-        return new(answered[0].Header, [.. answered.Select(a => a.Source)], failed, false);
+        if (answered.Count == 0) return new(null, [], failed, false) { Reasons = reasons };
+        if (answered.Any(a => !a.Header.Raw.AsSpan().SequenceEqual(answered[0].Header.Raw))) return new(null, [], failed, true) { Reasons = reasons };
+        return new(answered[0].Header, [.. answered.Select(a => a.Source)], failed, false) { Reasons = reasons };
     }
 
     /// Checks the Bitcoin attestations of `file`, lowest height first, as the reference client: the first whose
     /// message is the block's merkle root → Verified (one is enough). Otherwise Mismatch when a block's merkle root
-    /// differs, NotChecked when no header could be had (sources down or in conflict); NoAttestation (nothing asked)
-    /// when the file has no Bitcoin attestation.
-    public static async Task<BitcoinCheck> Verify(HttpClient http, OtsFile file, IReadOnlyList<string> sources, TimeSpan timeout, CancellationToken ct)
+    /// differs, NotChecked when no header could be had (sources down or in conflict — the problem names why each source
+    /// failed); NoAttestation (nothing asked) when the file has no Bitcoin attestation. At most MaxHeights distinct
+    /// heights (the lowest) are looked up; `note` is told when more were left out.
+    public static async Task<BitcoinCheck> Verify(HttpClient http, OtsFile file, IReadOnlyList<string> sources, TimeSpan timeout, CancellationToken ct, Action<string>? note = null)
     {
         var claims = file.Timestamp.All()
             .Where(p => p.Attestation is BitcoinAttestation)
@@ -115,6 +128,12 @@ public static class BitcoinHeaders
             .OrderBy(c => c.Height)
             .ToList();
         if (claims.Count == 0) return new(BitcoinOutcome.NoAttestation, null, null, [], "the proof has no Bitcoin attestation yet");
+        var heights = claims.Select(c => c.Height).Distinct().ToList();
+        if (heights.Count > MaxHeights)
+        {
+            claims = [.. claims.Where(c => c.Height <= heights[MaxHeights - 1])];
+            OtsCalendar.Tell(note, $"the .ots has Bitcoin attestations at {heights.Count} heights — only the lowest {MaxHeights} were checked");
+        }
 
         var lookups = new Dictionary<ulong, HeaderLookup>();
         BitcoinCheck? mismatch = null, notChecked = null;
@@ -124,7 +143,8 @@ public static class BitcoinHeaders
             if (look.Header == null)
             {
                 notChecked ??= new(BitcoinOutcome.NotChecked, height, null, [],
-                    look.Conflict ? $"the block header sources disagree about block {height}" : $"no block header source answered for block {height}");
+                    look.Conflict ? $"the block header sources disagree about block {height}"
+                    : $"no block header source answered for block {height}" + (look.Reasons.Count > 0 ? $" ({string.Join("; ", look.Reasons)})" : ""));
                 continue;
             }
             if (message.AsSpan().SequenceEqual(look.Header.MerkleRoot)) return new(BitcoinOutcome.Verified, height, look.Header.Time, look.Agreed, null);

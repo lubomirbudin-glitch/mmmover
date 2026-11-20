@@ -154,6 +154,10 @@ public class OtsNetworkTests
         Assert.NotNull(two.File);
         Assert.Equal([ok1.Url, ok2.Url], two.Accepted);
         Assert.Equal([error.Url, closed], two.Failed);
+        // Final fix B1: why each one failed, one line per failed calendar.
+        Assert.Equal(2, two.Reasons.Count);
+        Assert.Equal($"{error.Url}: HTTP 500", two.Reasons[0]);
+        Assert.StartsWith($"{closed}: TLS/connection: ", two.Reasons[1]);
         Assert.Equal(2, Commitment(two.File).Ops.Count);
         Assert.Equal(2, two.File.Timestamp.All().Count());
 
@@ -187,6 +191,14 @@ public class OtsNetworkTests
             [huge.Url, hugeLength.Url, garbage.Url, trailing.Url, deep.Url, deepOk.Url, ok1.Url, ok2.Url], 2, Patient, default);
 
         Assert.Equal([huge.Url, hugeLength.Url, garbage.Url, trailing.Url, deep.Url], r.Failed);
+        Assert.Equal(
+        [
+            $"{huge.Url}: answer too big (over 64 kB)",
+            $"{hugeLength.Url}: answer too big (over 64 kB)",
+            $"{garbage.Url}: not a timestamp (unsupported operation 0x3c)",
+            $"{trailing.Url}: not a timestamp (bytes after the end of the calendar's timestamp)",
+            $"{deep.Url}: answer too deep (256 operations from the file's digest; at most 255)",
+        ], r.Reasons);
         Assert.Equal([deepOk.Url, ok1.Url, ok2.Url], r.Accepted);
         Assert.NotNull(r.File);
         Assert.Equal(3, Commitment(r.File).Ops.Count);
@@ -221,6 +233,7 @@ public class OtsNetworkTests
         var r = await OtsCalendar.Stamp(http, Digest, [silent.Url], 1, TimeSpan.FromMilliseconds(500), default);
         Assert.Null(r.File);
         Assert.Equal([silent.Url], r.Failed);
+        Assert.Equal([$"{silent.Url}: timeout"], r.Reasons);
         Assert.True(sw.Elapsed < TimeSpan.FromSeconds(20), sw.Elapsed.ToString());
 
         using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(300));
@@ -300,15 +313,43 @@ public class OtsNetworkTests
         using var garbage = new Fake((_, c) => Reply(c, 200, "<!doctype html><title>OpenTimestamps calendar</title>"u8.ToArray()));
         using var error = new Fake((_, c) => Reply(c, 503, "busy"u8.ToArray()));
         using var silent = new Fake((_, _) => Task.Delay(Timeout.Infinite));
-        var f = PendingFile(out _, huge.Url, garbage.Url, error.Url, silent.Url, ClosedUrl());
+        var closed = ClosedUrl();
+        var f = PendingFile(out _, huge.Url, garbage.Url, error.Url, silent.Url, closed);
         var before = f.ToBytes();
+        var notes = new ConcurrentQueue<string>();
 
         var sw = Stopwatch.StartNew();
-        Assert.Equal(0, await OtsCalendar.Upgrade(http, f, Local, TimeSpan.FromSeconds(2), default));
+        Assert.Equal(0, await OtsCalendar.Upgrade(http, f, Local, TimeSpan.FromSeconds(2), default, notes.Enqueue));
 
         Assert.True(sw.Elapsed < TimeSpan.FromSeconds(20), sw.Elapsed.ToString());
         Assert.Equal(before, f.ToBytes());
         foreach (var c in new[] { huge, garbage, error, silent }) Assert.Single(c.Requests);
+        // Final fix B1: why each calendar failed (a 404 is no failure — nothing yet).
+        Assert.Equal(5, notes.Count);
+        Assert.Contains($"{huge.Url}: answer too big (over 64 kB)", notes);
+        Assert.Contains(notes, n => n.StartsWith($"{garbage.Url}: not a timestamp (", StringComparison.Ordinal));
+        Assert.Contains($"{error.Url}: HTTP 503", notes);
+        Assert.Contains($"{silent.Url}: timeout", notes);
+        // (Windows retries a refused connection for about 2 s — within this 2 s timeout either may come first)
+        Assert.Contains(notes, n => n == $"{closed}: timeout" || n.StartsWith($"{closed}: TLS/connection: ", StringComparison.Ordinal));
+    }
+
+    // Final fix C2: a hostile .ots with many pending calendars costs at most 16 distinct uris per upgrade, and says so.
+    [Fact]
+    public async Task Upgrade_AtMost16Calendars()
+    {
+        using var http = Client();
+        using var notYet = new Fake((_, c) => Reply(c, 404, "Pending confirmation in Bitcoin blockchain"u8.ToArray()));
+        var uris = Enumerable.Range(0, 20).Select(i => $"{notYet.Url}/c{i:00}").ToArray();
+        var f = PendingFile(out _, uris);
+        var notes = new ConcurrentQueue<string>();
+
+        Assert.Equal(0, await OtsCalendar.Upgrade(http, f, Local, Patient, default, notes.Enqueue));
+
+        Assert.Equal(16, notYet.Requests.Count);
+        Assert.Equal(uris.Order(StringComparer.Ordinal).Take(16).Select(u => u[notYet.Url.Length..] + "/timestamp/"),
+            notYet.Requests.Select(r => r.Path[..(r.Path.IndexOf("/timestamp/", StringComparison.Ordinal) + "/timestamp/".Length)]).Order(StringComparer.Ordinal));
+        Assert.Equal(["the .ots names 20 calendars — only 16 were asked"], notes);
     }
 
     [Fact]
@@ -559,13 +600,38 @@ public class OtsNetworkTests
         Assert.Equal([liar.Url, huge.Url, garbage.Url], look.Failed);
         Assert.False(look.Conflict);
 
+        // Final fix B1: why each source failed.
+        Assert.Equal(
+        [
+            $"{liar.Url}: the header does not hash to the block hash the source gave",
+            $"{huge.Url}: answer too big (over 64 kB)",
+            $"{garbage.Url}: expected 64 hex digits, got 2 characters",
+        ], look.Reasons);
+
         var check = await BitcoinHeaders.Verify(http, OtsFormatTests.HelloWorld(), [liar.Url, huge.Url, garbage.Url], Patient, default);
         Assert.Equal(BitcoinOutcome.NotChecked, check.Outcome);
         Assert.Empty(check.Sources);
-        Assert.NotNull(check.Problem);
+        Assert.Equal($"no block header source answered for block 358391 ({string.Join("; ", look.Reasons)})", check.Problem);
 
         var noSources = await BitcoinHeaders.Verify(http, OtsFormatTests.HelloWorld(), [], Patient, default);
         Assert.Equal(BitcoinOutcome.NotChecked, noSources.Outcome);
+    }
+
+    // Final fix C2: a hostile .ots with Bitcoin attestations at many heights costs at most 16 lookups (the lowest).
+    [Fact]
+    public async Task Verify_AtMost16Heights()
+    {
+        using var http = Client();
+        using var e1 = new Fake((_, c) => Reply(c, 404, "Block not found"u8.ToArray()));
+        var f = OtsFile.For(SHA256.HashData("heights"u8));
+        for (int i = 0; i < 40; i++) f.Timestamp.Add(OtsOp.Append([(byte)i])).Add(new BitcoinAttestation(800_000 + (ulong)i));
+        var notes = new List<string>();
+
+        var check = await BitcoinHeaders.Verify(http, f, [e1.Url], Patient, default, notes.Add);
+
+        Assert.Equal(BitcoinOutcome.NotChecked, check.Outcome);
+        Assert.Equal(Enumerable.Range(800_000, 16).Select(h => $"/block-height/{h}"), e1.Requests.Select(r => r.Path).Order(StringComparer.Ordinal));
+        Assert.Equal(["the .ots has Bitcoin attestations at 40 heights — only the lowest 16 were checked"], notes);
     }
 
     [Fact]

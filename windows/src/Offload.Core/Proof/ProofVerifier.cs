@@ -307,7 +307,9 @@ public static class ProofVerifier
             return new(ProofOutcome.NotYet, true, lines, "the Bitcoin block was not checked (offline)", null, claimed);
         }
 
-        var check = await BitcoinHeaders.Verify(http, ots, o.HeaderSources, o.Timeout, ct).ConfigureAwait(false);
+        var notes = new List<string>();   // a hostile .ots: how many heights were left out
+        var check = await BitcoinHeaders.Verify(http, ots, o.HeaderSources, o.Timeout, ct, notes.Add).ConfigureAwait(false);
+        lines.AddRange(notes.Select(n => L("Warning", n)));
         switch (check.Outcome)
         {
             case BitcoinOutcome.Verified:
