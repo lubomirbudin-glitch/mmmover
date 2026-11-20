@@ -18,7 +18,7 @@ final class ProofJobTests: XCTestCase {
 
     static func sha(_ data: Data) -> String { ProofHex.lower(Array(SHA256.hash(data: data))) }
 
-    static func sha(_ bytes: [UInt8]) -> String { ProofHex.lower(Array(SHA256.hash(data: bytes))) }
+    static func shaOf(_ bytes: [UInt8]) -> String { ProofHex.lower(Array(SHA256.hash(data: bytes))) }
 
     /// A job for the hooks it is given before it exists.
     final class Box {
@@ -142,7 +142,7 @@ final class ProofJobTests: XCTestCase {
         XCTAssertEqual(entry.written, [ProofEntry.writtenNone, ProofEntry.writtenNone])
         for cardPath in plan.cardPaths {
             let b = try ProofJobTests.bytes(ProofJobTests.proofPath(cardPath))
-            XCTAssertEqual(entry.digest, ProofJobTests.sha(b))
+            XCTAssertEqual(entry.digest, ProofJobTests.shaOf(b))
             let m = try ProofManifest.parse(b)
             XCTAssertEqual(m.id, entry.id)
             XCTAssertTrue(m.complete)
@@ -155,7 +155,7 @@ final class ProofJobTests: XCTestCase {
             for x in m.mhl { XCTAssertTrue(x.path.hasPrefix("ascmhl/0001_"), x.path) }
             for d in 0..<2 {
                 let mhl = try ProofJobTests.bytes(plan.cardPaths[d] + "/" + m.mhl[d].path)
-                XCTAssertEqual(m.mhl[d].sha256Hex, ProofJobTests.sha(mhl))
+                XCTAssertEqual(m.mhl[d].sha256Hex, ProofJobTests.shaOf(mhl))
             }
             // The backup verifies as before (the manifest is in _REPORT, which ASC MHL leaves out).
             XCTAssertTrue(try BackupVerifier.verify(cardPath).success, cardPath)
@@ -509,7 +509,7 @@ final class ProofJobTests: XCTestCase {
         XCTAssertFalse(entry.lastError?.contains(p1) ?? true)
         XCTAssertTrue(log.lines.contains("proof: " + why), "\(log.lines)")
         XCTAssertTrue(log.lines.contains("proof: offload_proof.json sealed in 1 of 2 card folders — queued for anchoring"), "\(log.lines)")
-        XCTAssertEqual(entry.digest, ProofJobTests.sha(try ProofJobTests.bytes(ProofJobTests.proofPath(p1))))
+        XCTAssertEqual(entry.digest, ProofJobTests.shaOf(try ProofJobTests.bytes(ProofJobTests.proofPath(p1))))
         XCTAssertEqual(try String(contentsOfFile: ProofJobTests.proofPath(p2), encoding: .utf8), ProofJobTests.other, "never replaced")
     }
 
@@ -555,7 +555,7 @@ final class ProofJobTests: XCTestCase {
         XCTAssertNil(after.proofError)
         XCTAssertEqual(entry.state, .queued)
         XCTAssertEqual(entry.cardPaths, paths)
-        XCTAssertEqual(entry.digest, ProofJobTests.sha(try ProofJobTests.bytes(ProofJobTests.proofPath(paths[0]))))
+        XCTAssertEqual(entry.digest, ProofJobTests.shaOf(try ProofJobTests.bytes(ProofJobTests.proofPath(paths[0]))))
         XCTAssertEqual(raised.lines, [entry.id])
         XCTAssertTrue(log.lines.contains("proof: offload_proof.json sealed in 2 of 2 card folders — queued for anchoring"))
         XCTAssertEqual(after.phase, .done, "the job as it was")
@@ -617,7 +617,7 @@ final class ProofJobTests: XCTestCase {
         XCTAssertEqual(entry.cardPaths, cardPaths)
         for (d, p) in cardPaths.enumerated() {
             let b = try ProofJobTests.bytes(ProofJobTests.proofPath(p, 2))
-            XCTAssertEqual(entry.digest, ProofJobTests.sha(b))
+            XCTAssertEqual(entry.digest, ProofJobTests.shaOf(b))
             let json = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(b)) as? [String: Any])
             XCTAssertEqual((json["card"] as? [String: Any])?["generation"] as? Int, 2)
             let m = try ProofManifest.parse(b)

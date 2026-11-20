@@ -36,6 +36,8 @@ public struct JobConfig: Codable, Equatable {
     /// Plan 11 (Offload Proof): SHA-256 of every file in the card read (`files[].sha256`) for the proof of the copy. Off by
     /// default here; the app and the CLI turn it on from the settings (profile `proof`).
     public var proof = false
+    /// Plan 11: where the proof queue lives; nil = `ProofStore.defaultFolder` (Application Support/mmMover/proof).
+    public var proofFolder: String?
 
     public init(source: String, destRoots: [String]) {
         self.source = source
@@ -65,6 +67,7 @@ public struct JobConfig: Codable, Equatable {
         primaryDestination = try c.decodeIfPresent(Int.self, forKey: .primaryDestination)
         dayReport = try c.decode(Bool.self, forKey: .dayReport)
         proof = try c.decodeIfPresent(Bool.self, forKey: .proof) ?? false
+        proofFolder = try c.decodeIfPresent(String.self, forKey: .proofFolder)
     }
 }
 
@@ -132,6 +135,12 @@ public struct JobStatus {
     public var verifyTotalByDest: [Int64] = []
     /// Task 70: clips whose decoder reported a defect (the copy matches the card) — "Safe to format" waits for a look.
     public var contentWarnings = 0
+    /// Plan 11 (Offload Proof): the queue entry (ProofStore) of the proof this job sealed once its generation's record was
+    /// final; nil when the proof was off or none was sealed (cancelled, failed, card changed, "Nothing new").
+    public var proofId: String?
+    /// Plan 11: why the proof was not created (English, e.g. a different proof of the generation is there already) — a
+    /// note only, never the job's result.
+    public var proofError: String?
 
     public init() {}
 
@@ -170,6 +179,32 @@ public final class OffloadJob {
     var cacheCheck: ((String) -> String?)?
     /// Tests only (internal): called when stage 2's verification starts, with its session.
     var onVerifySession: ((VerifySession) -> Void)?
+    /// Final fix C5 (Windows `ProofAddRetries`): the queue could not take the entry of a sealed proof (its manifests are
+    /// written) — tried again in the background after these waits, so the job never waits for it and the manifests are
+    /// never orphaned once the store is back. Tests make them short.
+    var proofAddRetries: [TimeInterval] = [1, 3, 10]
+    private var _proofSealed: ((String) -> Void)?
+    /// The background retry of the queue entry is still on (`proofRetries` waits for it).
+    private var proofRetrying = false
+    private let proofRetries = DispatchGroup()
+
+    /// Plan 11: a proof was sealed and queued (its entry id, also in `status().proofId`) — on the job's thread, or on the
+    /// background retry of the queue (final fix C5); the app's proof service stamps it at once. Set it before the run.
+    public var proofSealed: ((String) -> Void)? {
+        get { lock.lock(); defer { lock.unlock() }; return _proofSealed }
+        set { lock.lock(); _proofSealed = newValue; lock.unlock() }
+    }
+
+    /// Final fix C5: the queue entry of a sealed proof is still being retried in the background (`status().proofId`, or
+    /// after the last try `proofError`, comes then).
+    public var proofQueueing: Bool { lock.lock(); defer { lock.unlock() }; return proofRetrying }
+
+    /// Waits at most `timeout` seconds for the background retry of the queue entry (the CLI, before it says where the
+    /// proof is); true when none is left (or none was needed).
+    @discardableResult
+    public func waitForProofQueue(timeout: TimeInterval) -> Bool {
+        proofRetries.wait(timeout: .now() + timeout) == .success
+    }
 
     /// Set on a worker thread, read by the app's main thread — always under the lock.
     public var plan: OffloadPlan? { lock.lock(); defer { lock.unlock() }; return _plan }
@@ -318,7 +353,7 @@ public final class OffloadJob {
     /// Runs the whole job synchronously. Never throws: the outcome is in `status()` and the returned report.
     @discardableResult
     public func run(log: ((String) -> Void)? = nil) -> OffloadReport? {
-        if runCopy() { runPost(log: log) }
+        if runCopy(log: log) { runPost(log: log) }
         writeDayReports(log: log)
         return report
     }
@@ -343,8 +378,9 @@ public final class OffloadJob {
 
     /// Stage 1 — card → disks + verification. Returns true when stage 2 should follow.
     /// After this the card is no longer needed, so the app can start the next card while stage 2 runs.
+    /// `log`: the job's lines (plan 11: the proof's).
     @discardableResult
-    public func runCopy() -> Bool {
+    public func runCopy(log: ((String) -> Void)? = nil) -> Bool {
         lock.lock()
         started = true
         let cancelledBeforeStart = cancelled
@@ -358,7 +394,7 @@ public final class OffloadJob {
         let activity = ProcessInfo.processInfo.beginActivity(
             options: [.userInitiated, .idleSystemSleepDisabled], reason: "Offloading camera card")
         defer { ProcessInfo.processInfo.endActivity(activity) }
-        if let into = config.appendInto { return runAppend(into) }
+        if let into = config.appendInto { return runAppend(into, log: log) }
         do {
             var plan = try prepare()
             if plan.project == nil && config.project != nil {
@@ -387,8 +423,6 @@ public final class OffloadJob {
             pausedAtCopyEnd = engine.pauses.pausedTotal
             // A read-back through the macOS cache (spec D.23.1): never a silent green.
             if let note = report.verifyNotes?.first { update { $0.addWarning(note) } }
-            // The record of the copy (report, hashes, MHL) on this Mac too, right after verification.
-            LocalReports.sync(date: plan.date, cardName: plan.cardName, cardPaths: plan.cardPaths)
             setReport(report)
             update {
                 $0.safeToEject = report.success
@@ -396,6 +430,12 @@ public final class OffloadJob {
                 $0.copySucceeded = report.success
                 $0.copy = engine.snapshot()
             }
+            // Plan 11 (design 5): the generation's record is final here — ASC MHL written, read back (or not verified at
+            // all) — unless the verification waits for stage 2 (sealed there, after the commit). After the verdict (the
+            // proof never delays it) and before the local copy, so that carries the manifest.
+            if report.verifyPending != true && sealsProof(plan) { sealProof(report, log: log) }
+            // The record of the copy (report, hashes, MHL, the proof) on this Mac too, right after verification.
+            LocalReports.sync(date: plan.date, cardName: plan.cardName, cardPaths: plan.cardPaths)
             if isCancelled {
                 if report.verifyPending == true, let historyFolder {
                     // Cancelled once the reports said verifyPending: nothing was verified, the generation is not committed
@@ -453,7 +493,7 @@ public final class OffloadJob {
 
     /// An append (FORMATY „Doplnění“): the card folders' lock first (busy = refused at once, nothing written), the plan
     /// under it, then only the new files into the same card folders as generation N. The lock is held for stage 1.
-    private func runAppend(_ into: [String]) -> Bool {
+    private func runAppend(_ into: [String], log: ((String) -> Void)?) -> Bool {
         let held: FolderLocks
         do {
             held = try FolderLocks.acquire(into)
@@ -527,7 +567,6 @@ public final class OffloadJob {
             keepHeld = true
             lock.lock(); verifyLock = held; lock.unlock()
         }
-        LocalReports.sync(date: plan.date, cardName: plan.cardName, cardPaths: plan.cardPaths)
         setReport(report)
         // The whole backup as its card folders' reports say it now (the one definition of "verified").
         let whole = BackupState.of(plan.cardPaths)
@@ -537,6 +576,10 @@ public final class OffloadJob {
             $0.copySucceeded = report.success
             $0.copy = engine.snapshot()
         }
+        // Plan 11 (design 5): generation N's record is final here (a resume's too: it is committed like a verified one),
+        // unless the verification waits for stage 2 — as in runCopy, still under the card folders' lock.
+        if report.verifyPending != true && sealsProof(plan) { sealProof(report, log: log) }
+        LocalReports.sync(date: plan.date, cardName: plan.cardName, cardPaths: plan.cardPaths)
         if isCancelled {
             if report.verifyPending == true, let historyFolder {
                 recordFinished(plan, report: report, volume: volume, card: ap.fullScan, folder: historyFolder)
@@ -687,7 +730,6 @@ public final class OffloadJob {
         }
         defer { lockNow?.release() }
         let outcome = Verification.commit(final, cardPaths: plan.cardPaths, log: log, beforeCommit: beforeCommit)
-        LocalReports.sync(date: plan.date, cardName: plan.cardName, cardPaths: plan.cardPaths)
         if let w = outcome.warning { update { $0.addWarning(w) } }
         let whole = BackupState.of(plan.cardPaths)
         recordVerified(plan, outcome.report, whole: whole, committed: outcome.committed)
@@ -698,6 +740,13 @@ public final class OffloadJob {
             $0.safeToFormat = safe
             $0.copySucceeded = $0.copySucceeded != false && outcome.report.success
         }
+        // Plan 11 (design 5): verifying during the proxies, the record is final only now — verified (the session ran to
+        // its end: a cancelled or stopped one returned above, nothing committed) and committed into every folder — so the
+        // proof (only verified files) is sealed here, after the verdict, still under the folders' lock and before the
+        // local copy. Never when the card changed (its files were verified at once, `verifyNow`).
+        if outcome.committed && sealsProof(plan) { sealProof(outcome.report, log: log) }
+        // The record of the copy on this Mac too, with the verification result (and the proof).
+        LocalReports.sync(date: plan.date, cardName: plan.cardName, cardPaths: plan.cardPaths)
         // The job's report (its PDF, the app) never looks verified where the result is not written everywhere.
         var mine = outcome.report
         if !outcome.committed { mine.verifyIncomplete = true }
@@ -713,6 +762,127 @@ public final class OffloadJob {
                 guard let e = existing else { return nil }
                 return (HistoryRecorder.verifiedEntry(e, plan: plan, report: report, whole: whole, committed: committed), nil)
             }
+        }
+    }
+
+    // MARK: - Offload Proof (plan 11)
+
+    /// Design 5: a proof only with the switch on and never for a cancelled copy, one whose card changed, nor a repair (the
+    /// data are the backup's). Whether the generation's record is final is the caller's (each seal point).
+    private func sealsProof(_ plan: OffloadPlan) -> Bool {
+        config.proof && !isCancelled && !engine.cardChanged && plan.mode != .repair
+    }
+
+    /// Plan 11 (Windows `SealProof`; design 5, 6, 10): the final record of the generation → the proof manifest into
+    /// `_REPORT` of every card folder (ProofSeal: a new file only, never over a different one) and its entry into the
+    /// queue, `queued` (the proof service stamps it at the calendars). Written into some folders only: the entry still
+    /// names every destination (ruling R9 — the service writes the .ots only where the manifest is, so it shows "on N of M
+    /// disks") and its lastError the folders that failed. The job's result never changes: a seal that wrote no folder, or
+    /// a queue that refused it, is a log line and `proofError`, nothing else; a queue that could not take it now is tried
+    /// again in the background (final fix C5).
+    private func sealProof(_ report: OffloadReport, log: ((String) -> Void)?) {
+        let now = Date()
+        guard let seal = ProofSeal.seal(report: report, now: now) else {
+            proofNotCreated(ProofMsg.noFiles, log: log)
+            return
+        }
+        let name = ProofManifest.fileName(generation: seal.manifest.generation)
+        var failed: [String] = seal.errors
+        var holding = 0
+        for d in report.destinations {
+            let path = d.cardPath + "/" + Layout.reportDirName + "/" + name
+            if seal.written.contains(path) {
+                holding += 1
+            } else if !seal.errors.contains(where: { $0.hasPrefix(path + ":") }) {
+                // ProofSeal skips a card folder that is gone (an unplugged disk) without a line: named here.
+                failed.append(path + ": " + VIPMsg.cardFolderGone)
+            }
+        }
+        for line in failed { log?("proof: " + line) }
+        let lastError: String? = failed.isEmpty ? nil : failed.joined(separator: "; ")
+        guard holding > 0 else {
+            proofNotCreated(lastError ?? ProofMsg.noCardFolder, log: log)
+            return
+        }
+        var entry = ProofEntry(id: seal.manifest.id, created: now, manifest: name, digest: ProofHex.lower(seal.digest),
+                               cardName: seal.manifest.cardName, date: seal.manifest.date,
+                               generation: seal.manifest.generation, cardPaths: report.destinations.map(\.cardPath),
+                               volumeSerials: report.destinations.map(\.volumeSerial), state: .queued)
+        entry.lastError = lastError
+        let store = ProofStore(folder: config.proofFolder ?? ProofStore.defaultFolder)
+        let sealedLine = "proof: \(name) sealed in \(holding) of \(report.destinations.count) card folders — queued for anchoring"
+        do {
+            try store.add(entry)
+        } catch {
+            let why = ProofService.message(error)
+            guard OffloadJob.queueMayTakeItLater(error) else {
+                proofNotCreated(why, log: log)
+                return
+            }
+            // C5: the manifests are on the disks — the entry must follow, without the job waiting for it.
+            log?("proof: the queue could not take \(name) (\(why)) — trying again in the background")
+            queueLater(store, entry, name: name, line: sealedLine, log: log)
+            return
+        }
+        queued(entry, line: sealedLine, log: log)
+    }
+
+    /// A queue that refused an entry for good (an id that is no file name — never one of ProofSeal's) is not asked again;
+    /// busy, an entry there already, or the disk's error (Windows IOException / UnauthorizedAccessException) is.
+    static func queueMayTakeItLater(_ error: Error) -> Bool {
+        guard let e = error as? ProofStoreError else { return true }
+        switch e {
+        case .exists, .busy: return true
+        case .invalidId, .idChanged: return false
+        }
+    }
+
+    private func proofNotCreated(_ why: String, log: ((String) -> Void)?) {
+        log?("proof not created: \(why)")
+        update { $0.proofError = why }
+    }
+
+    /// The entry is in the queue: `status().proofId`, the log line, `proofSealed`.
+    private func queued(_ entry: ProofEntry, line: String, log: ((String) -> Void)?) {
+        update {
+            $0.proofId = entry.id
+            $0.proofError = nil
+        }
+        log?(line)
+        proofSealed?(entry.id)
+    }
+
+    /// Final fix C5: the entry the queue did not take, tried again after each of `proofAddRetries` on a thread of its own;
+    /// after the last one `proofError` — the manifests stay, `mmmover proof upgrade <card folder>` stamps them. Never
+    /// changes anything else of the job.
+    private func queueLater(_ store: ProofStore, _ entry: ProofEntry, name: String, line: String, log: ((String) -> Void)?) {
+        let waits = proofAddRetries
+        lock.lock(); proofRetrying = true; lock.unlock()
+        proofRetries.enter()
+        DispatchQueue.global(qos: .utility).async {
+            defer {
+                self.lock.lock(); self.proofRetrying = false; self.lock.unlock()
+                self.proofRetries.leave()
+            }
+            var why = ""
+            for (i, wait) in waits.enumerated() {
+                Thread.sleep(forTimeInterval: wait)
+                do {
+                    try store.add(entry)
+                    self.queued(entry, line: line, log: log)
+                    return
+                } catch {
+                    if store.get(entry.id) != nil {   // it got there after all (an earlier try wrote it, then failed)
+                        self.queued(entry, line: line, log: log)
+                        return
+                    }
+                    why = ProofService.message(error)
+                    log?("proof: the queue could not take \(name) (\(why)) — try \(i + 1) of \(waits.count)")
+                }
+            }
+            let error = ProofMsg.queueFailed(why)
+            log?("proof not created: \(error)")
+            self.update { $0.proofError = error }
         }
     }
 

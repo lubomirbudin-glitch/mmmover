@@ -495,7 +495,7 @@ public final class ProofService: @unchecked Sendable {
         if e.state != .complete { return ots.withoutBitcoin(where: { _ in true }) }
         if let anchor = e.bitcoinHeight { return ots.withoutBitcoin(where: { $0 != anchor }) }
         if let c = e.contradicted, !c.isEmpty { return ots.withoutBitcoin(c) }
-        return ots
+        return ots.withoutBitcoin(where: { _ in false })   // a copy (M4 review): never the object it was given
     }
 
     /// Writes `ots` as `<card>/_REPORT/<manifest>.ots` of every card path of `e` — only where `_REPORT/<manifest>` is
@@ -859,8 +859,30 @@ public final class ProofService: @unchecked Sendable {
         case let e as OtsUsageError: return e.reason
         case let e as OtsNetworkError: return e.reason
         case is CancellationError: return "cancelled"
-        default: return error.localizedDescription
+        default: return english(error)
         }
+    }
+
+    /// Any other error in English (M4 review — `localizedDescription` follows the user's language): a Cocoa error by its
+    /// POSIX reason (`strerror`), with the file it names; another Cocoa or system error by its domain and code; an error
+    /// of this package as it describes itself.
+    static func english(_ error: Error) -> String {
+        let ns = error as NSError
+        var posix: Int? = ns.domain == NSPOSIXErrorDomain ? ns.code : nil
+        if posix == nil, let under = ns.userInfo[NSUnderlyingErrorKey] as? NSError, under.domain == NSPOSIXErrorDomain {
+            posix = under.code
+        }
+        let system: [String] = [NSCocoaErrorDomain, NSURLErrorDomain, NSOSStatusErrorDomain, NSMachErrorDomain]
+        let text: String
+        if let code = posix {
+            text = String(cString: strerror(Int32(truncatingIfNeeded: code)))
+        } else if system.contains(ns.domain) {
+            text = "\(ns.domain) error \(ns.code)"
+        } else {
+            return "\(error)"
+        }
+        guard let path = ns.userInfo[NSFilePathErrorKey] as? String, !path.isEmpty else { return text }
+        return path + ": " + text
     }
 
     func saveError(_ id: String, _ why: String) {

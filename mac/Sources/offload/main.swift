@@ -174,6 +174,9 @@ struct Copy: ParsableCommand {
     @Flag(help: "Only scan and check, do not copy.")
     var dryRun = false
 
+    @Flag(help: "No Offload Proof: no SHA-256 of the files, no proof manifest, nothing sent to the timestamp calendars.")
+    var noProof = false
+
     @OptionGroup var stage: StageTwo
 
     func run() throws {
@@ -200,6 +203,7 @@ struct Copy: ParsableCommand {
         config.buffers = buffers
         config.verify = !noVerify
         config.allowSameDevice = allowSameDevice
+        config.proof = ProofCLI.proofOn(noProof: noProof)
         try stage.apply(to: &config)
         config.primaryDestination = try stage.primaryIndex(destinations: dest.count)
         try JobRun.run(config, dryRun: dryRun)
@@ -253,6 +257,9 @@ struct Append: ParsableCommand {
     @Flag(help: "Do not read or write the card history (needs --into).")
     var noHistory = false
 
+    @Flag(help: "No Offload Proof: no SHA-256 of the files, no proof manifest, nothing sent to the timestamp calendars.")
+    var noProof = false
+
     @OptionGroup var stage: StageTwo
 
     func run() throws {
@@ -262,6 +269,7 @@ struct Append: ParsableCommand {
         config.buffers = buffers
         config.verify = !noVerify
         config.recordHistory = !noHistory
+        config.proof = ProofCLI.proofOn(noProof: noProof)
         try stage.apply(to: &config)
         var folders = into.map(abs)
         let insight = noHistory ? nil : Copy.inspect(config.source, history: true)
@@ -334,12 +342,15 @@ enum JobRun {
         }
         fflush(stdout)
         if dryRun { return }
+        // Plan 11 (final fix A1): once per job with the proof on a Mac without SHA instructions — how fast it hashes.
+        if config.proof, let note = ProofCLI.rateNote() { print(note) }
 
         signal(SIGINT, SIG_IGN)
         let sigint = DispatchSource.makeSignalSource(signal: SIGINT, queue: .global())
         sigint.setEventHandler {
             fputs("\n" + Msg.cancelling + "\n", stderr)
             job.cancel()
+            ProofCLI.cancelStamp()   // the stamp after the job ends sooner; the entry stays in the queue
         }
         sigint.resume()
 
@@ -350,7 +361,7 @@ enum JobRun {
         var report: OffloadReport?
         var finished = false
         Thread.detachNewThread {
-            report = job.run()
+            report = job.run(log: JobRun.proofLog)
             DispatchQueue.main.async { finished = true }
         }
         while !finished { RunLoop.main.run(mode: .default, before: Date().addingTimeInterval(0.1)) }
@@ -384,7 +395,18 @@ enum JobRun {
         } else if let w = status.warning, w != Msg.historyDelayed, !job.engine.spaceWarnings.contains(w) {
             print(Msg.cliWarning + w)
         }
+        // Plan 11 (design 10): last — the stamp (at most 20 s; a queue entry still retried in the background is waited for
+        // first, at most 30 s) never delays the outcome lines and never changes the exit code.
+        fflush(stdout)
+        for line in ProofCLI.afterJob(job, log: { fputs($0 + "\n", stderr) }) { print(line) }
         if VerifyOptions.exitCode(verify: config.verify, status, report) != 0 { throw ExitCode(1) }
+    }
+
+    /// The job's lines the CLI shows: the proof's (on stderr, as Windows prints the job's log); the others stay quiet as
+    /// before. The status line is cleared first.
+    static func proofLog(_ line: String) {
+        guard line.hasPrefix("proof") else { return }
+        fputs("\r\u{1B}[K" + line + "\n", stderr)
     }
 }
 
