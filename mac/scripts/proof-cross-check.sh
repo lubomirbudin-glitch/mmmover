@@ -36,22 +36,21 @@ run() {
 line() { grep -m 1 "^$1" "$2" || true; }
 
 # agree <what> <mmmover out> <verify_proof.py out> <mmmover exit> <verify_proof.py exit> <expected exit> <prefix…>:
-# both exit as expected and print the same line for every prefix (the first one must be there).
+# both exit as expected and print the same line for every prefix (each must be there).
 agree() {
   local what=$1 mac=$2 py=$3 mc=$4 pc=$5 want=$6
   shift 6
   echo "== $what"
   echo "mmmover proof verify: exit $mc"
   echo "verify_proof.py:      exit $pc"
-  local first=1 p m y
+  local p m y
   for p in "$@"; do
     m=$(line "$p" "$mac")
     y=$(line "$p" "$py")
     echo "mmmover proof verify: $m"
     echo "verify_proof.py:      $y"
-    if [[ $first == 1 && -z $m ]]; then fail "$what: mmmover printed no '$p' line"; fi
+    if [[ -z $m ]]; then fail "$what: mmmover printed no '$p' line"; fi
     [[ $m == "$y" ]] || fail "$what: the '$p' lines differ"
-    first=0
   done
   [[ $mc == "$want" ]] || fail "$what: mmmover proof verify exited $mc, expected $want"
   [[ $pc == "$want" ]] || fail "$what: verify_proof.py exited $pc, expected $want"
@@ -109,7 +108,7 @@ mc=$code
 run "$WORK/py-windows.txt" python3 -I "$PY" "$W"
 pc=$code
 agree "the Windows fixture proof-windows/A001" "$WORK/mac-windows.txt" "$WORK/py-windows.txt" "$mc" "$pc" 2 \
-  "SHA-256:" "File:" "RESULT:"
+  "SHA-256:" "File:" "Anchor:" "RESULT:"
 
 # 3. The Windows fixture anchored in Bitcoin block 976695 — offline (OK would need the real block explorers).
 A="$FIX/proof-windows-anchored/A001/CLIP/A001C000.bin"

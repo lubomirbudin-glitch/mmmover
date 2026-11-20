@@ -664,6 +664,48 @@ final class ProofVerifierTests: XCTestCase {
         XCTAssertEqual(folder.outcome, .ok, "\(folder.lines)")
     }
 
+    /// The card's manifest with `files` replaced by `paths` (self-consistent: sorted, right count and Merkle root,
+    /// canonical, anchored by a new .ots) — what a hostile or odd but valid manifest looks like to the verifier.
+    func reseal(_ card: Card, paths: [String]) throws -> ProofVerifierTests.Explorers {
+        var m = try ProofManifest.parse(try ProofJSON.parse(try ProofVerifierTests.read(card.manifestPath)))
+        var files: [ProofFile] = []
+        for rel in paths {
+            let data: Data = Data(rel.utf8)
+            let sha: String = ProofVerifierTests.sha(data)
+            files.append(ProofFile(path: rel, size: Int64(data.count), sha256Hex: sha, xxh64Hex: "0123456789abcdef"))
+        }
+        files.sort { ProofManifest.utf16Precedes($0.path, $1.path) }
+        m.files = files
+        m.merkleCount = files.count
+        m.merkleRootHex = ProofHex.lower(m.computeRoot())
+        let bytes: [UInt8] = Jcs.serialize(m.toJSON())
+        try ProofVerifierTests.write(bytes, card.manifestPath)
+        return ProofVerifierTests.explorers(self, try card.writeCompleteOts(digest: OtsTest.sha256(bytes)))
+    }
+
+    // M5b review: a path that leads out of the card (or is no path) is "Missing" with Windows' words, the folder FAILED;
+    // a name that starts with a combining mark (it fuses with the "/" as a Swift Character) is still inside the card.
+    func testPathsOutsideTheCardAreMissingAndACombiningMarkNameIsInside() async throws {
+        let card = try Card(self)
+        let hostile: [String] = ["../x", "/etc/x", "a\b", "a:b"]
+        let ex = try reseal(card, paths: hostile)
+        let o = ProofVerifierTests.options(ex.urls)
+
+        let v = try await ProofVerifier.verifyFolder(card.path, options: o)
+
+        XCTAssertEqual(v.outcome, .failed, "\(v.lines)")
+        for rel in hostile {
+            XCTAssertTrue(v.lines.contains("Missing:   \(rel) (not a path inside the card folder)"), "\(rel): \(v.lines)")
+        }
+
+        let name = "\u{0301}x.mov"
+        try Data(name.utf8).write(to: URL(fileURLWithPath: card.path + "/" + name))
+        let ex2 = try reseal(card, paths: [name])
+        let inside = try await ProofVerifier.verifyFolder(card.path, options: ProofVerifierTests.options(ex2.urls))
+        XCTAssertEqual(inside.outcome, .ok, "\(inside.lines)")
+        XCTAssertFalse(inside.lines.contains { $0.hasPrefix("Missing:") }, "\(inside.lines)")
+    }
+
     // A file in no card folder with a proof, a file that is not there: FAILED with a reason.
     func testNoProofOrNoFileFailed() async throws {
         let dir = tempDir()

@@ -241,7 +241,7 @@ struct VerifySettings: View {
             }
             // Plan 11: Offload Proof — the settings' proof.enabled; independent of verification (SHA-256 is computed while
             // the card is read). A job already in the queue keeps its own; the queue finishes sealed proofs either way.
-            FormRow(label: "Offload Proof") {
+            FormRow(label: "") {   // the checkbox carries the words
                 VStack(alignment: .leading, spacing: 10) {
                     Toggle(ProofMsg.switchLabel, isOn: $model.settings.proof.enabled)
                         .toggleStyle(.offloadCheckbox)

@@ -681,6 +681,7 @@ enum ProofRun {
         let done = DispatchSemaphore(value: 0)
         let task = Task.detached {
             let show: (String) -> Void = { line in
+                guard isatty(STDERR_FILENO) != 0 else { return }   // Windows' ConsoleLine: nothing when stderr is redirected
                 box.showed = true
                 fputs("\r\u{1B}[K" + line, stderr)
             }
@@ -709,9 +710,7 @@ enum ProofRun {
 /// A number as it was most likely typed: "0", "-2", "1.5" (for Msg.notPositiveNumber).
 func numberText(_ v: Double) -> String { Swift.abs(v) < 1e15 && v == v.rounded() ? String(Int64(v)) : String(v) }
 
-func abs(_ p: String) -> String {
-    URL(fileURLWithPath: (p as NSString).expandingTildeInPath).standardizedFileURL.path
-}
+func abs(_ p: String) -> String { ProofCLI.fullPath(p) }
 
 /// One status line on stderr, refreshed twice a second.
 final class ProgressDisplay {

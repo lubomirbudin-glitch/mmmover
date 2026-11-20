@@ -708,7 +708,7 @@ def _check_manifest_raw(m, offline, sources, get, pow_limit):
                              "one %s was made for)" % ots_name, None, None)
 
     heights = [a.value for _, a in ots.pairs if a.kind == "bitcoin"]
-    pending = sorted({a.value for _, a in ots.pairs if a.kind == "pending"})
+    pending = list(dict.fromkeys(a.value for _, a in ots.pairs if a.kind == "pending"))
     if not heights:
         if not pending:
             return ManifestCheck("FAILED", True, lines, "%s has no Bitcoin attestation and no calendar that could give "

@@ -770,8 +770,8 @@ final class AppModel: ObservableObject {
     }
 
     func jobFinished(_ item: JobItem) {
+        watchProofQueueing(item)   // first: a queue retry that ends before refresh() must still reach the chip
         item.refresh()
-        watchProofQueueing(item)
         loadHistory()   // the card's line follows ("Backed up … — verified, safe to format")
         // The next estimate (Windows ruling M2: a cancelled job or an unfinished stage 2 teaches nothing).
         if let r = item.report {

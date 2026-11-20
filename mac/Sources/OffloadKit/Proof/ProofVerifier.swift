@@ -239,7 +239,11 @@ public enum ProofVerifier {
             case .notYet:
                 waiting.append(why)
             case .ok:
-                anchors.append((time: c.time ?? Date(timeIntervalSince1970: 0), block: c.block ?? 0))
+                if let time = c.time, let block = c.block {
+                    anchors.append((time: time, block: block))
+                } else {
+                    failures.append(notValid(m.name, "the Bitcoin anchor has no time or block"))
+                }
             }
 
             let files = manifest.files
@@ -390,7 +394,7 @@ public enum ProofVerifier {
         for n in notes.lines { lines.append(label("Warning", n)) }
         switch check.outcome {
         case .verified:
-            let time = check.time ?? Date(timeIntervalSince1970: 0)
+            guard let time = check.time else { throw ProofFormatError("the Bitcoin block has no time") }
             let height = check.height ?? claimed
             lines.append(label("Anchor", "Bitcoin block \(height), \(utc(time)) (\(ProofService.agree(check.sources)))"))
             if check.sources.count == 1 {
@@ -639,7 +643,9 @@ public enum ProofVerifier {
         while base.count > 1 && base.hasSuffix("/") { base.removeLast() }
         let root = base.hasSuffix("/") ? base : base + "/"
         let full = URL(fileURLWithPath: root + rel).standardizedFileURL.path
-        return full.lowercased().hasPrefix(root.lowercased()) ? full : nil
+        // Bytes, not Characters: a name that starts with a combining mark must not fuse with the "/" before it.
+        let inside: Bool = Array(full.utf8).starts(with: Array(root.utf8))
+        return inside ? full : nil
     }
 
     static func fileSize(_ path: String) throws -> Int64 {

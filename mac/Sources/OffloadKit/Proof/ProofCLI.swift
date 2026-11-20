@@ -154,8 +154,10 @@ public enum ProofCLI {
                 v = try await ProofVerifier.verifyFile(full, options: o)
             }
             return (lines: v.lines, errors: [], exitCode: exitCode(v.outcome))
-        } catch {
+        } catch is CancellationError {
             return (lines: [], errors: [cancelled], exitCode: 1)
+        } catch {
+            return (lines: [], errors: [Msg.cliError + ProofService.message(error)], exitCode: 1)
         }
     }
 
@@ -238,8 +240,10 @@ public enum ProofCLI {
                     return (lines: [], errors: [Msg.cliError + "no proof manifest or timestamp (.ots) in \(report)."], exitCode: 1)
                 }
                 return (lines: lines, errors: [], exitCode: 0)
-            } catch {
+            } catch is CancellationError {
                 return (lines: [], errors: [cancelled], exitCode: 1)
+            } catch {
+                return (lines: [], errors: [Msg.cliError + ProofService.message(error)], exitCode: 1)
             }
         }
         if let id {
@@ -275,8 +279,8 @@ public enum ProofCLI {
     static func notInQueue(_ id: String, _ store: ProofStore) -> String { "no proof \(id) in the queue (\(store.folder))." }
 
     /// As the CLI takes a path: `~` expanded, relative to the current folder, `.` and `..` resolved.
-    static func fullPath(_ path: String) -> String {
-        URL(fileURLWithPath: (path as NSString).expandingTildeInPath).standardizedFileURL.path
+    public static func fullPath(_ path: String) -> String {
+        ProofVerifier.fullPath(path) ?? path
     }
 }
 

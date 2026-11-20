@@ -511,7 +511,13 @@ struct VerdictChips: View {
     }
 
     @ViewBuilder private var proof: some View {
-        if let c = state.proofChip { chip(c).help(state.proofTooltip ?? "") }
+        if let c = state.proofChip {
+            if let tip = state.proofTooltip {
+                chip(c).help(tip)
+            } else {
+                chip(c)
+            }
+        }
     }
 
     private func chip(_ c: CardChip) -> some View {
