@@ -1216,4 +1216,39 @@ final class ProofServiceTests: XCTestCase {
         XCTAssertEqual(nothing.count, 0)
         XCTAssertEqual(rig.a.upgrades, upgrades + 1)
     }
+
+    // M4 review (carried into M5a): every text is English — a Cocoa error says its POSIX reason through strerror (with the
+    // file it names), never in the user's language; another Cocoa error by domain and code; the package's own as before.
+    func testMessagesOfCocoaErrorsAreEnglish() {
+        let posix = NSError(domain: NSPOSIXErrorDomain, code: Int(ENOENT))
+        XCTAssertEqual(ProofService.message(posix), "No such file or directory")
+        let cocoa = NSError(domain: NSCocoaErrorDomain, code: NSFileReadNoSuchFileError,
+                            userInfo: [NSUnderlyingErrorKey: posix, NSFilePathErrorKey: "/x/y.ots"])
+        XCTAssertEqual(ProofService.message(cocoa), "/x/y.ots: No such file or directory")
+        let bare = NSError(domain: NSCocoaErrorDomain, code: NSFileWriteUnknownError)
+        XCTAssertEqual(ProofService.message(bare), "NSCocoaErrorDomain error 512")
+        XCTAssertEqual(ProofService.message(IOError(message: "the disk is gone")), "the disk is gone")
+        XCTAssertEqual(ProofService.message(ProofStoreError.exists("x")), "the proof entry x exists already")
+        do {
+            _ = try Data(contentsOf: URL(fileURLWithPath: "/no/such/folder/x.ots"))
+            XCTFail("read a file that is not there")
+        } catch {
+            let text = ProofService.message(error)
+            XCTAssertTrue(text.hasSuffix("No such file or directory"), text)
+        }
+    }
+
+    // M4 review (carried into M5a): a complete entry with neither a height nor contradicted heights (only a hand-edited
+    // one) gets a copy of its tree for the disks, never the object it was given.
+    func testDiskTreeOfAHandEditedCompleteEntryIsACopy() throws {
+        let digest = [UInt8](repeating: 0xab, count: 32)
+        var e = ProofEntry(id: "hand-edited", created: ProofServiceTests.t0, manifest: "offload_proof.json",
+                           digest: OtsTest.hex(digest), cardName: "A001", date: "2026-11-19")
+        e.state = .complete
+        let ots = try OtsFile.for(sha256Digest: digest)
+        try ots.timestamp.add(.bitcoin(ProofServiceTests.height))
+        let tree = try XCTUnwrap(ProofService.diskTree(e, ots))
+        XCTAssertFalse(tree === ots, "a copy, never the object it was given")
+        XCTAssertEqual(try tree.toBytes(), try ots.toBytes())
+    }
 }

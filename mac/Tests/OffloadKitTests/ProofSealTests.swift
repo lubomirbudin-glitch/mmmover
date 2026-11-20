@@ -194,11 +194,16 @@ final class ProofSealTests: XCTestCase {
         cfg.dayReport = false
         cfg.historyFolder = dir.sub("history")
         cfg.proof = true
+        cfg.proofFolder = dir.path + "/proof"
         let job = OffloadJob(config: cfg, options: options)
         let report = try XCTUnwrap(job.run())
         XCTAssertEqual(job.status().phase, .done, job.status().error ?? "")
 
-        let seal = try XCTUnwrap(ProofSeal.seal(report: report, now: Date()))
+        // M5a: the job sealed it itself; sealed again with its id and time, the bytes are the same (counted as written).
+        let sealed = try ProofManifest.parse(try bytes(report.destinations[0].cardPath + "/_REPORT/offload_proof.json"))
+        XCTAssertEqual(job.status().proofId, sealed.id)
+        let when = try XCTUnwrap(ISO8601DateFormatter().date(from: sealed.created), sealed.created)
+        let seal = try XCTUnwrap(ProofSeal.seal(report: report, now: when, id: sealed.id))
         XCTAssertEqual(seal.errors, [])
         XCTAssertEqual(seal.written.count, 2)
         XCTAssertTrue(seal.manifest.complete)

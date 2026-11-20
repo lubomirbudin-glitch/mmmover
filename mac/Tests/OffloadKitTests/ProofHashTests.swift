@@ -30,6 +30,8 @@ final class ProofHashTests: XCTestCase {
         cfg.historyFolder = history
         cfg.appendInto = appendInto
         cfg.proof = proof
+        // M5a: a job with the proof seals and queues it — into a queue of this test's own.
+        cfg.proofFolder = (history as NSString).deletingLastPathComponent + "/proof"
         return OffloadJob(config: cfg, options: options ?? self.options())
     }
 
@@ -279,6 +281,38 @@ final class ProofHashTests: XCTestCase {
             XCTAssertFalse(try text(p + "/_REPORT/offload_report.json").lowercased().contains("sha256"), "generation 1 as it was")
             XCTAssertFalse(try mhlText(p).lowercased().contains("sha256"))
             XCTAssertEqual(ManifestFile.files(ManifestFile.read(p), generation: 2)["clip/a001c003.mov"]?.sha256, ProofHashTests.sha(added))
+        }
+    }
+
+    // Design 9 (Windows Append_WithoutProof_OntoABackupWithIt_NoSha256): an append with the proof off onto a backup whose
+    // generation 1 had it computes no SHA-256 — whatever the earlier backup's `hashAlgorithms` say.
+    func testAppendWithoutProofOntoABackupWithItNoSha256() throws {
+        let dir = tempDir()
+        let c = try copied(dir, proof: true)
+        let paths = try XCTUnwrap(c.job.plan).cardPaths
+        let card = c.job.config.source
+        TestFS.writeRandom(card + "/CLIP/A001C003.mov", size: 3000, seed: 9)
+        let j = job(card, [], proof: false, appendInto: paths, history: dir.sub("history"))
+        let report = try XCTUnwrap(j.run())
+        XCTAssertEqual(j.status().phase, .done, j.status().error ?? "")
+        XCTAssertTrue(j.status().safeToFormat, j.status().warning ?? "")
+        let plan = try XCTUnwrap(j.plan)
+        XCTAssertEqual(plan.mode, .append)
+        XCTAssertEqual(plan.generation, 2)
+        XCTAssertEqual(plan.hashKinds, .xxh64)
+        XCTAssertFalse(j.engine.ranSha256, "no SHA-256 consumer")
+        XCTAssertNil(report.hashAlgorithms)
+        XCTAssertEqual(report.files.map(\.path), ["CLIP/A001C003.mov"])
+        XCTAssertNil(report.files.first?.sha256)
+        XCTAssertNil(j.status().proofId)
+        for p in paths {
+            let text = try self.text(p + "/_REPORT/offload_report_0002.json")
+            XCTAssertFalse(text.lowercased().contains("sha256"), text)
+            XCTAssertFalse(text.contains("hashAlgorithms"))
+            let records = ManifestFile.files(ManifestFile.read(p), generation: 2)
+            XCTAssertEqual(records.count, 1)
+            XCTAssertTrue(records.values.allSatisfy { $0.sha256 == nil })
+            XCTAssertFalse(FileManager.default.fileExists(atPath: p + "/_REPORT/offload_proof_0002.json"), "no proof without it")
         }
     }
 

@@ -153,6 +153,38 @@ final class SettingsStoreTests: XCTestCase {
         XCTAssertEqual(saved["proxy"] as? String, "from a future version")
     }
 
+    // Plan 11 (Windows Proof_DefaultOn_RoundTrip_UnknownKeysAndUnreadableKept_PerProject; the Mac has no projects yet):
+    // section "proof" — on by default (the test machine has SHA instructions); off and keys of a newer version survive
+    // a save; a section this version cannot read is kept as it is (the live value is the default).
+    func testProofDefaultOnRoundTripUnknownKeysAndUnreadableKept() throws {
+        ProofTestSeams.install()
+        XCTAssertTrue(SettingsStore.decode(nil).proof.enabled)
+        XCTAssertTrue(AppSettings().proof.enabled)
+
+        let s = load(#"{"proof":{"enabled":false,"x":1},"verify":true}"#)
+        XCTAssertFalse(s.proof.enabled)
+        XCTAssertFalse(s.unreadable.contains("proof"))
+        let saved = try XCTUnwrap(SettingsStore.encode(s))
+        let root = try XCTUnwrap(JSONSerialization.jsonObject(with: saved) as? [String: Any])
+        let proof = try XCTUnwrap(root["proof"] as? [String: Any])
+        XCTAssertEqual(proof["enabled"] as? Bool, false)
+        XCTAssertEqual(proof["x"] as? Int, 1, "a key of a newer version stays")
+        XCTAssertFalse(SettingsStore.decode(saved).proof.enabled)
+        XCTAssertNotEqual(s, AppSettings(), "the switch is part of the settings' equality")
+
+        let bad = load(#"{"proof":{"enabled":"yes"},"verify":false}"#)
+        XCTAssertTrue(bad.proof.enabled)
+        XCTAssertFalse(bad.verify, "the other sections are read")
+        XCTAssertTrue(bad.unreadable.contains("proof"))
+        let kept = try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(SettingsStore.encode(bad))) as? [String: Any])
+        XCTAssertEqual((kept["proof"] as? [String: Any])?["enabled"] as? String, "yes")
+
+        let list = load(#"{"proof":[1]}"#)
+        XCTAssertTrue(list.proof.enabled)
+        let keptList = try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(SettingsStore.encode(list))) as? [String: Any])
+        XCTAssertEqual(keptList["proof"] as? [Int], [1])
+    }
+
     func testDefaultsOfNewKeys() {
         let s = SettingsStore.decode(nil)
         XCTAssertTrue(s.naming.suggestFromClips)
