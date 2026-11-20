@@ -516,6 +516,21 @@ final class OtsNetworkTests: XCTestCase {
         XCTAssertEqual(OtsHTTP.reason(OtsNetworkError("answer too big (over 64 kB)")), "answer too big (over 64 kB)")
     }
 
+    // M5a review (carried into M5b): a failed connection is told in fixed English words, never in the user's language
+    // (`localizedDescription`) — it goes into the queue's lastError and the log.
+    func testReasonsOfAFailedConnectionAreEnglish() {
+        XCTAssertEqual(OtsHTTP.reason(URLError(.cannotConnectToHost)), "TLS/connection: could not connect to the host")
+        XCTAssertEqual(OtsHTTP.reason(URLError(.cannotFindHost)), "TLS/connection: the host name could not be resolved")
+        XCTAssertEqual(OtsHTTP.reason(URLError(.dnsLookupFailed)), "TLS/connection: the host name could not be resolved")
+        XCTAssertEqual(OtsHTTP.reason(URLError(.secureConnectionFailed)), "TLS/connection: the secure connection failed")
+        XCTAssertEqual(OtsHTTP.reason(URLError(.serverCertificateUntrusted)), "TLS/connection: the server's certificate is not trusted")
+        XCTAssertEqual(OtsHTTP.reason(URLError(.networkConnectionLost)), "TLS/connection: the connection was lost")
+        XCTAssertEqual(OtsHTTP.reason(URLError(.notConnectedToInternet)), "TLS/connection: no network connection")
+        XCTAssertEqual(OtsHTTP.reason(URLError(URLError.Code(rawValue: -1234))), "TLS/connection: network error -1234")
+        let e = URLError(.cannotConnectToHost, userInfo: [NSLocalizedDescriptionKey: "Verbindung fehlgeschlagen"])
+        XCTAssertEqual(OtsHTTP.reason(e), "TLS/connection: could not connect to the host", "never the localized text")
+    }
+
     static func hashOf(_ header: [UInt8]) -> String {
         let first = Array(SHA256.hash(data: Data(header)))
         let second = Array(SHA256.hash(data: Data(first)))

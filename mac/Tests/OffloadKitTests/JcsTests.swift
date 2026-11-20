@@ -114,6 +114,37 @@ final class JcsTests: XCTestCase {
         XCTAssertEqual(ProofJSON.maxBytes, 256 * 1024 * 1024, "the verifiers' manifest cap")
     }
 
+    // M5b: a lenient parse reads what Windows `JsonNode.Parse` reads — a number canonical JSON cannot hold is kept as its
+    // text, a key twice stays twice — and `Jcs.canonical` refuses them with the words of the .NET exceptions, the first
+    // one in the order Windows `Jcs.Serialize` writes (keys sorted); what is not JSON at all is still an error.
+    func testLenientParseAndTheCanonicalCheck() throws {
+        let text = "[1.5,9007199254740992,-0,1E2,-2.5e-3,99999999999999999999,{\"k\":1,\"k\":2}]"
+        let v = try ProofJSON.parse(bytes(text), lenient: true)
+        let twice: ProofJSON = .members([("k", .int(1)), ("k", .int(2))])
+        let expected: ProofJSON = .array([.number("1.5"), .number("9007199254740992"), .int(0), .number("1E2"),
+                                          .number("-2.5e-3"), .number("99999999999999999999"), twice])
+        XCTAssertEqual(v, expected)
+        XCTAssertThrowsError(try ProofJSON.parse(bytes(text)), "strict as before")
+        XCTAssertThrowsError(try Jcs.canonical(v)) { e in
+            XCTAssertEqual((e as? ProofFormatError)?.reason, "Only integers in +-(2^53-1) are supported: 1.5")
+        }
+        let nested = try ProofJSON.parse(bytes("{\"b\":1.5,\"a\":{\"k\":1,\"k\":2}}"), lenient: true)
+        XCTAssertThrowsError(try Jcs.canonical(nested)) { e in
+            XCTAssertEqual((e as? ProofFormatError)?.reason, "An item with the same key has already been added. Key: k (Parameter 'key')")
+        }
+        let fine = try ProofJSON.parse(bytes("{\"b\":[1,{\"x\":null}],\"a\":\"\\u0001\"}"), lenient: true)
+        XCTAssertEqual(try Jcs.canonical(fine), Jcs.serialize(fine))
+        for bad in ["1.", "1e", "1e+", "-", "01", ".5", "1.e3", "[1,]", "{\"a\":1,}"] {
+            XCTAssertThrowsError(try ProofJSON.parse(bytes(bad), lenient: true), bad) { XCTAssertTrue($0 is ProofFormatError, "\($0)") }
+        }
+        XCTAssertNil(ProofJSON.firstDuplicateKey([]))
+        let ten: [([UInt16], ProofJSON)] = (0..<10).map { (Array("k\($0 % 9)".utf16), ProofJSON.null) }
+        XCTAssertEqual(ProofJSON.firstDuplicateKey(ten), Array("k0".utf16), "the 10th member repeats the 1st")
+        let small: [([UInt16], ProofJSON)] = [(Array("a".utf16), .null), (Array("b".utf16), .null), (Array("b".utf16), .null),
+                                             (Array("a".utf16), .null)]
+        XCTAssertEqual(ProofJSON.firstDuplicateKey(small), Array("b".utf16), "as .NET adds them: b is the first one twice")
+    }
+
     func testStringsKeepUtf16CodeUnits() throws {
         XCTAssertEqual(try ProofJSON.parse(bytes("\"\\ud800\"")), .string([0xD800]))
         XCTAssertEqual(try ProofJSON.parse(bytes("\"\\uD83D\\uDE00\"")), .string([0xD83D, 0xDE00]))

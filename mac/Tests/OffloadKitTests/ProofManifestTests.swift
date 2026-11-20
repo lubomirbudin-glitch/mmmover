@@ -181,7 +181,8 @@ final class ProofManifestTests: XCTestCase {
         hostile.append((rep("\"sha256:" + c, "\"sha256:" + c.uppercased()), "sha256"))
         hostile.append((rep("\"size\":30,", "\"size\":9007199254740992,"), "size"))
         hostile.append((rep("\"size\":30,", "\"size\":-1,"), "size"))
-        hostile.append((rep("\"size\":30,", "\"size\":30.0,"), "not an integer"))
+        // M5b: Windows' words — a fraction is no integer at all ("Missing or wrong"), as `TryGetValue<long>` reads it
+        hostile.append((rep("\"size\":30,", "\"size\":30.0,"), "Missing or wrong \"size\""))
         hostile.append((rep("\"version\":1", "\"version\":0"), "version"))
         hostile.append((rep("\"version\":1", "\"version\":4294967297"), "version"))
         hostile.append((rep("\"generation\":1", "\"generation\":0"), "generation"))
@@ -191,7 +192,8 @@ final class ProofManifestTests: XCTestCase {
         hostile.append((rep("\"destination\":1", "\"destination\":0"), "destination"))
         hostile.append((rep("\"excluded\":[", "\"excluded\":5,\"x\":["), "excluded"))
         hostile.append((rep("\"machine\":\"Mac\",", ""), "machine"))
-        hostile.append((rep("\"complete\":false", "\"complete\":\"no\""), "complete"))
+        // M5b: Windows' words — System.Text.Json's for a value that is no boolean
+        hostile.append((rep("\"complete\":false", "\"complete\":\"no\""), "cannot be converted to a 'System.Boolean'"))
         hostile.append((rep("\"files\":[", "\"files\":[1,"), "files"))
         hostile.append((rep("\"mhl\":[", "\"mhl\":[5,"), "mhl"))
         hostile.append((rep("\"path\":\"CLIP/\u{159}.mov\"", "\"path\":\"CLIP/\\ud800.mov\""), "path"))

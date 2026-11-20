@@ -51,7 +51,7 @@ let testSettingsDir: String = {
 /// first read of testSettingsDir and every proof test's setUp). The settings folder first, so the proof's locks
 /// (`AppSupport.lockFolder`) are in it; the store under it (`ProofStore.defaultFolderOverride`);
 /// `ProofServiceOptions.default()` with no calendar, no explorer and URLSession only through the stub
-/// (`defaultOverride`); every test machine "fast" — SHA instructions, 1000 MB/s (`ProofHardware.force`; a test forces its
+/// (`defaultOverride`), `ProofVerifyOptions.default()` with no explorer either; every test machine "fast" — SHA instructions, 1000 MB/s (`ProofHardware.force`; a test forces its
 /// own and its restore brings this back), so no test depends on the CPU it runs on (the `macos-15-intel` runner too).
 /// Synthetic block headers (OtsNetworkTests.mine, regtest difficulty) pass the proof-of-work check of the faked
 /// explorers; a real header passes either way, and `hasProofOfWork(limit: mainnetPowLimit)` tests Bitcoin's own limit.
@@ -64,6 +64,10 @@ enum ProofTestSeams {
         ProofServiceOptions.defaultOverride = {
             ProofServiceOptions(protocolClasses: [StubURLProtocol.self], calendars: [], headerSources: [],
                                 allowedCalendar: { $0.hasPrefix("http://stub-") })
+        }
+        // M5b (Windows `ProofVerifyOptions.DefaultOverride`): the verifier asks no explorer by default.
+        ProofVerifyOptions.defaultOverride = {
+            ProofVerifyOptions(protocolClasses: [StubURLProtocol.self], headerSources: [])
         }
         _ = ProofHardware.force(hasSha: true, mbps: ProofTestSeams.fastMBps)   // never restored: the run's default
     }()
