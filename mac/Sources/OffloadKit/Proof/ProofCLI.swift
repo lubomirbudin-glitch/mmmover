@@ -61,6 +61,13 @@ public enum ProofCLI {
     private static let stampLock = NSLock()
     private static var stamping: Task<Void, Never>?
 
+    /// The stamp Ctrl+C cancels (nil: none now) — synchronous, so the lock is never held across an await.
+    private static func setStamping(_ task: Task<Void, Never>?) {
+        stampLock.lock()
+        stamping = task
+        stampLock.unlock()
+    }
+
     static func anchor(proofId: String?, proofError: String?, store: ProofStore, options: ProofServiceOptions,
                        deadline: TimeInterval, log: ((String) -> Void)?) async -> [String] {
         if let why = proofError { return [ProofMsg.notCreated(why)] }
@@ -70,13 +77,9 @@ public enum ProofCLI {
         let say = o.log
         let stamp = ProofCLIStamp(service: ProofService(store: store, options: o), id: id)
         let work = Task<Void, Never> { await stamp.run() }
-        stampLock.lock()
-        stamping = work
-        stampLock.unlock()
+        setStamping(work)
         let finished = await ProofCLI.wait(for: work, cancelAfter: deadline, giveUpAfter: deadline + 1)
-        stampLock.lock()
-        stamping = nil
-        stampLock.unlock()
+        setStamping(nil)
         if !finished { say?("proof: not waiting any longer") }   // left running until the process ends
         let unread = ProofEntry(id: id, created: Date(), manifest: "", digest: "", cardName: "", date: "")
         let entry = store.get(id) ?? unread   // unreadable now: it waits in the queue
