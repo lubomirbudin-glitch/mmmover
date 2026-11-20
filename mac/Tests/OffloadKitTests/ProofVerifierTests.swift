@@ -687,7 +687,7 @@ final class ProofVerifierTests: XCTestCase {
     // a name that starts with a combining mark (it fuses with the "/" as a Swift Character) is still inside the card.
     func testPathsOutsideTheCardAreMissingAndACombiningMarkNameIsInside() async throws {
         let card = try Card(self)
-        let hostile: [String] = ["../x", "/etc/x", "a\b", "a:b"]
+        let hostile: [String] = ["../x", "/etc/x", "a\\b", "a:b"]
         let ex = try reseal(card, paths: hostile)
         let o = ProofVerifierTests.options(ex.urls)
 
