@@ -178,6 +178,40 @@ public class ProofHashTests
         }
     }
 
+    // Global constraint: a corrupted sha256 in the record of a file the resume does not read again fails nothing — the file
+    // is good by its xxh64 as before, only without its SHA-256 (the proof leaves it out); the others have theirs.
+    [Fact]
+    public void Resume_MalformedSha256InARecord_FileStillGood_WithoutIt()
+    {
+        using var dir = new TempDir();
+        var (card, files, cardPaths) = Crashed(dir, proof: true);
+        foreach (var cardPath in cardPaths)
+        {
+            var manifest = ManifestFile.PathIn(cardPath);
+            var text = File.ReadAllText(manifest);
+            var good = $"\"sha256\":\"{Sha(files["CLIP/A.mov"])}\"";
+            Assert.Contains(good, text);
+            File.WriteAllText(manifest, text.Replace(good, "\"sha256\":\"not-a-sha256\""));
+        }
+        var read = new List<string>();
+        var options = AppendFixtures.Options();
+        var resume = Job(card, [], options, proof: true, appendInto: cardPaths);
+        options.BeforeFileCopy = i => read.Add(resume.Plan!.Scan.Files[i].RelPath);
+
+        resume.Run();
+
+        Assert.Equal(JobPhase.Done, resume.Status().Phase);
+        Assert.True(resume.Status().SafeToFormat);
+        Assert.Equal(["CLIP/B.mov", "CLIP/C.mov"], read);   // A is still known: not read again
+        var a = resume.Report!.Files.Single(f => f.Path == "CLIP/A.mov");
+        Assert.Null(a.SourceError);
+        Assert.Equal(["verified", "verified"], a.Destinations);
+        Assert.Equal(Format.Hex64(System.IO.Hashing.XxHash64.HashToUInt64(files["CLIP/A.mov"])), a.Xxh64);
+        Assert.Null(a.Sha256);
+        Assert.All(resume.Report.Files.Where(f => f.Path != "CLIP/A.mov"), f => Assert.Equal(Sha(files[f.Path]), f.Sha256));
+        Assert.Empty(resume.Report.FailedFiles);
+    }
+
     // The proof off for the resume of a copy made with it: nothing of SHA-256 in the report (the records keep theirs).
     [Fact]
     public void Resume_WithoutProof_OfACopyWithIt_HasNoSha256()

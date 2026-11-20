@@ -70,22 +70,25 @@ public class ManifestFileTests
         Assert.Equal(sha, new ManifestRecord { Path = "a.mov", Xxh64 = "0123456789abcdef", Sha256 = sha.ToUpperInvariant() }.Hashes()!.Value.Sha256);
     }
 
-    // A sha256 that is not 64 hex digits makes the record's hashes unreadable, as a bad md5 does: a resume never takes them.
+    // A sha256 that is not 64 hex digits is dropped alone: the record's xxh64, md5 and xxh128 still count — a field only
+    // the proof uses never makes a good copy look unrecorded (the proof never changes the job). A bad md5 is as before.
     [Theory]
     [InlineData("zz")]
     [InlineData("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b85")]
     [InlineData("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855ff")]
     [InlineData("g3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855")]
     [InlineData("")]
-    public void Record_MalformedSha256_HashesNull(string sha256)
+    public void Record_MalformedSha256_DropsOnlySha256(string sha256)
     {
         static ManifestRecord Record(string? sha256, string? md5 = null) => new()
         {
-            Path = "a.mov", Size = 4096, Xxh64 = "0123456789abcdef", Md5 = md5, Sha256 = sha256, BlockSize = 4096, Blocks = ManifestRecord.Hex([1UL]),
+            Path = "a.mov", Size = 4096, Xxh64 = "0123456789abcdef", Md5 = md5, Xxh128 = new string('a', 32), Sha256 = sha256,
+            BlockSize = 4096, Blocks = ManifestRecord.Hex([1UL]),
         };
-        Assert.NotNull(Record(null).Hashes());
-        Assert.Null(Record(sha256).Hashes());
-        Assert.Null(Record(null, md5: "zz").Hashes());   // as a bad md5
+        var h = Record(sha256, md5: new string('b', 32)).Hashes()!.Value;
+        Assert.Equal((0x0123456789abcdefUL, new string('b', 32), new string('a', 32)), (h.Xxh64!.Value, h.Md5Hex, h.Xxh128));
+        Assert.Null(h.Sha256);
+        Assert.Null(Record(null, md5: "zz").Hashes());   // a bad md5: unchanged
     }
 
     // A crash in the middle of a line: that line is skipped, the next append starts on its own line.

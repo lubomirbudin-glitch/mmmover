@@ -50,8 +50,9 @@ public sealed class ManifestRecord
         return new BlockManifest(Size, BlockSize, values);
     }
 
-    /// The hashes the card gave, as the copy records them; null when xxh64 is not readable, or md5 or sha256 is there but
-    /// is not hex (sha256: not 64 hex digits).
+    /// The hashes the card gave, as the copy records them; null when xxh64 is not readable, or md5 is there but is not
+    /// hex. A sha256 that is not 64 hex digits is left out alone (plan 11): a field only the proof uses never makes a
+    /// recorded copy unknown — the proof never changes the job.
     public FileHashes? Hashes()
     {
         if (Xxh64 is not { Length: 16 } x || !ulong.TryParse(x, NumberStyles.AllowHexSpecifier, CultureInfo.InvariantCulture, out var xx)) return null;
@@ -61,8 +62,8 @@ public sealed class ManifestRecord
             try { md5 = Convert.FromHexString(Md5); }
             catch (FormatException) { return null; }
         }
-        if (Sha256 != null && (Sha256.Length != 64 || !Sha256.All(char.IsAsciiHexDigit))) return null;
-        return new FileHashes(xx, md5, Xxh128, Sha256?.ToLowerInvariant());
+        var sha256 = Sha256 is { Length: 64 } s && s.All(char.IsAsciiHexDigit) ? s.ToLowerInvariant() : null;
+        return new FileHashes(xx, md5, Xxh128, sha256);
     }
 }
 
