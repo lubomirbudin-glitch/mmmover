@@ -289,4 +289,20 @@ public static partial class Msg
     public static string SummaryExtraWritten(string path) => $"Summary report also on the selected disk: {path}";
     public static string SummaryExtraFailed(string detail) => $"The summary report was not written to the selected disk: {detail} — it is only on this computer.";
     public static string SummaryFailed(string detail) => $"Could not create the summary report: {detail}";
+
+    // Offload Proof (plan 11): why a job sealed no proof (JobStatus.ProofError), and the CLI's line after the job.
+    public const string ProofNoFiles = "no file of this copy is good on every destination with its SHA-256 — there is nothing to anchor";
+    public const string ProofNoCardFolder = "no card folder could be written (the destination disks are not connected)";
+    public static string ProofNotCreated(string why) => $"Proof: not created — {why}";
+
+    /// Where the queue entry is right after the job's one stamp attempt; `calendars`: how many accepted the stamp
+    /// (0 = not known).
+    public static string ProofLine(Proof.ProofEntry e, int calendars = 0) => e.State switch
+    {
+        Proof.ProofState.Queued => "Proof: waiting for network — mmMover finishes it later (mmmover proof upgrade)",
+        Proof.ProofState.Pending => "Proof: anchoring requested" + (calendars > 0 ? $" at {calendars} calendars" : "")
+            + " — Bitcoin confirms in a few hours (mmmover proof status)",
+        Proof.ProofState.Complete => "Proof: anchored" + (e.BitcoinHeight is { } h ? $" (block {h})" : ""),
+        _ => ProofNotCreated(e.LastError ?? "the proof could not be finished"),
+    };
 }

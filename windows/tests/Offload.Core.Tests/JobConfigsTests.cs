@@ -153,6 +153,32 @@ public class JobConfigsTests
         Assert.Equal("film-x", c.Notify.Ntfy.Topic);
     }
 
+    // Plan 11 (design 9): the proof follows the profile a job runs with — the shown one for a full copy, the earlier
+    // backup's project for an append; "Copy again" keeps the job's own (it seals nothing, but hashes as the backup did).
+    [Fact]
+    public void Proof_FromTheProfileOfTheJob()
+    {
+        var s = Settings("Reklama Y");
+        Projects.Find(s, "Film X")!.Proof.Enabled = false;
+
+        Assert.True(JobConfigs.Full(s, @"K:\", null, "2026-10-06").Proof);
+        Assert.False(JobConfigs.Append(s, @"K:\", Entry("Film X")).Proof);
+        Assert.True(JobConfigs.Append(s, @"K:\", Entry(null)).Proof);
+        Projects.Activate(s, "Film X");
+        var full = JobConfigs.Full(s, @"K:\", null, "2026-10-06");
+        Assert.False(full.Proof);
+        Assert.Null(full.ProofFolder);   // the default queue
+
+        var original = new JobConfig(@"K:\", [@"E:\Film"]) { Proof = true, ProofFolder = @"C:\proof" };
+        var plan = new OffloadPlan
+        {
+            Source = @"K:\", DestRoots = [@"E:\Film"], CardName = "A001", Date = "2026-10-06",
+            Scan = new SourceScan { Root = @"K:\", Files = [], Dirs = [], Skipped = [] },
+        };
+        var repair = JobConfigs.Repair(original, plan, null);
+        Assert.Equal((true, @"C:\proof"), (repair.Proof, repair.ProofFolder));
+    }
+
     // ── Ruling M15: a started job keeps its own copy ───────────────────────
 
     [Fact]

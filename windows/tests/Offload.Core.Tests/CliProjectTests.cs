@@ -64,6 +64,30 @@ public class CliProjectTests
         return card;
     }
 
+    // Plan 11 (design 9): the project's proof switch is the default (on without --project); --no-proof turns it off.
+    [Fact]
+    public void Proof_FromTheProject_NoProofTurnsItOff()
+    {
+        using var dir = new TempDir();
+        var dest = dir.Sub("dest");
+        var folder = Settings(dir, dest);
+        var path = Path.Combine(folder, "settings.json");
+        var s = SettingsStore.Load(path);
+        Projects.Find(s, "Film X")!.Proof.Enabled = false;
+        SettingsStore.Save(s, path);
+        var card = Card(dir);
+        var seen = new List<JobConfig>();
+
+        Run(folder, seen, CopyCommand.Create(), card, "--project", "Film X", "--no-history", "--dry-run");
+        Run(folder, seen, CopyCommand.Create(), card, "--project", Projects.NoProject, "-d", dest, "--no-history", "--dry-run");
+        Run(folder, seen, CopyCommand.Create(), card, "--project", Projects.NoProject, "-d", dest, "--no-history", "--dry-run", "--no-proof");
+        Run(folder, seen, CopyCommand.Create(), card, "-d", dest, "--no-history", "--dry-run");
+        Run(folder, seen, CopyCommand.Create(), card, "-d", dest, "--no-history", "--dry-run", "--no-proof");
+
+        Assert.Equal([false, true, false, true, false], seen.Select(c => c.Proof));
+        Assert.All(seen, c => Assert.Null(c.ProofFolder));   // the default queue
+    }
+
     [Fact]
     public void Project_GivesTheDefaults_ReportNamesIt()
     {

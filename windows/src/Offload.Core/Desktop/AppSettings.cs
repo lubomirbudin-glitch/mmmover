@@ -17,6 +17,17 @@ public sealed class NamingSettings
     [JsonExtensionData] public Dictionary<string, JsonElement>? Extra { get; set; }
 }
 
+/// "proof" in settings.json (plan 11, design 9): Offload Proof — on by default.
+public sealed class ProofSettings
+{
+    /// Every offload gets a proof (SHA-256 of every file in the card read, the manifest in `_REPORT`, anchored with
+    /// OpenTimestamps); off = no SHA-256 is computed at all.
+    [JsonPropertyName("enabled")] public bool Enabled { get; set; } = true;
+
+    /// Keys of this section a newer version wrote: kept and written back (R24).
+    [JsonExtensionData] public Dictionary<string, JsonElement>? Extra { get; set; }
+}
+
 /// What a project holds (spec 4.1, R17): the top level of settings.json is the profile "No project", every entry of
 /// `projects` is a named profile of the same shape. Tools, port names and the update check stay global (AppSettings).
 public class SettingsProfile
@@ -42,6 +53,8 @@ public class SettingsProfile
     [JsonPropertyName("notify")] public NotifySettings Notify { get; set; } = new();
     /// Connected disks as destinations, cards in readers as sources (task 2026-10-09) — `autoDrives`.
     [JsonPropertyName("autoDrives")] public AutoDriveSettings AutoDrive { get; set; } = new();
+    /// Offload Proof (plan 11) — `proof`.
+    [JsonPropertyName("proof")] public ProofSettings Proof { get; set; } = new();
 
     /// Keys this version does not know (a newer version wrote them): kept as they are and written back, so going back
     /// to an older version never loses anything (R24).
@@ -101,7 +114,7 @@ public static class SettingsStore
     public static string DefaultPath => Path.Combine(AppData.Folder, "settings.json");
 
     /// The keys of a profile (top level and every project) Load reads into properties.
-    static readonly string[] ProfileKeys = ["destRoots", "verify", "verifyInProxy", "verifyPrimary", "analyzeClips", "proxy", "naming", "hash", "outputs", "notify", "autoDrives"];
+    static readonly string[] ProfileKeys = ["destRoots", "verify", "verifyInProxy", "verifyPrimary", "analyzeClips", "proxy", "naming", "hash", "outputs", "notify", "autoDrives", "proof"];
     /// The global top-level keys; every other top-level key goes to AppSettings.Extra.
     static readonly string[] GlobalKeys = ["tools", "portNames", "updates", "projects", "activeProject"];
 
@@ -200,6 +213,7 @@ public static class SettingsStore
         Kept(obj, p, "outputs", (OutputSettings v) => p.Outputs = v, () => new OutputSettings());
         Kept(obj, p, "notify", (NotifySettings v) => p.Notify = v, () => new NotifySettings());
         Kept(obj, p, "autoDrives", (AutoDriveSettings v) => p.AutoDrive = v, () => new AutoDriveSettings());
+        Kept(obj, p, "proof", (ProofSettings v) => p.Proof = v, () => new ProofSettings());
         foreach (var (key, value) in obj)
             if (!ProfileKeys.Contains(key) && !alsoKnown.Contains(key)) (p.Extra ??= [])[key] = value;
     }
@@ -276,6 +290,7 @@ public static class SettingsStore
         s.Notify ??= new NotifySettings();
         s.Notify.Ntfy ??= new NtfySettings();
         s.AutoDrive ??= new AutoDriveSettings();
+        s.Proof ??= new ProofSettings();
         s.AutoDrive.Added = (s.AutoDrive.Added ?? []).Where(a => a is { Root.Length: > 0, Disk.Length: > 0 }).ToList();
         s.AutoDrive.Removed = (s.AutoDrive.Removed ?? []).Where(r => !string.IsNullOrWhiteSpace(r)).Select(r => r.Trim())
             .Distinct(StringComparer.OrdinalIgnoreCase).ToList();

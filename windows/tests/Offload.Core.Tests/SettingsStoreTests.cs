@@ -74,6 +74,61 @@ public class SettingsStoreTests
         Assert.False(SettingsStore.Load(path).Outputs.DayReport);
     }
 
+    // Plan 11 (design 9): profile section "proof" — on by default (top level and every project); off and keys of a newer
+    // version survive a save; a section this version cannot read is kept as it is (the live value is the default).
+    [Fact]
+    public void Proof_DefaultOn_RoundTrip_UnknownKeysAndUnreadableKept_PerProject()
+    {
+        using var dir = new TempDir();
+        var path = Path.Combine(dir.Path, "settings.json");
+        var fresh = SettingsStore.Load(path);
+        Assert.True(fresh.Proof.Enabled);
+
+        var s = LoadJson(dir, """{"proof":{"enabled":false,"x":1},"projects":[{"name":"Film X"},{"name":"Film Y","proof":{"enabled":false}}]}""");
+        Assert.False(s.Proof.Enabled);
+        Assert.Null(s.Extra);   // a known key, never among the unknown ones
+        Assert.True(s.Projects[0].Proof.Enabled);   // a project without the section: on
+        Assert.False(s.Projects[1].Proof.Enabled);
+        Assert.Null(s.Projects[1].Extra);
+        SettingsStore.Save(s, path);
+        using (var doc = JsonDocument.Parse(File.ReadAllText(path)))
+        {
+            var proof = doc.RootElement.GetProperty("proof");
+            Assert.False(proof.GetProperty("enabled").GetBoolean());
+            Assert.Equal(1, proof.GetProperty("x").GetInt32());
+            Assert.False(doc.RootElement.GetProperty("projects")[1].GetProperty("proof").GetProperty("enabled").GetBoolean());
+        }
+        var again = SettingsStore.Load(path);
+        Assert.False(again.Proof.Enabled);
+        Assert.True(again.Projects[0].Proof.Enabled);
+        Assert.False(again.Projects[1].Proof.Enabled);
+
+        var bad = LoadJson(dir, """{"proof":{"enabled":"yes"},"verify":false,"projects":[{"name":"Film X","proof":[1]}]}""");
+        Assert.True(bad.Proof.Enabled);
+        Assert.False(bad.Verify);   // the other sections are read
+        Assert.True(bad.Projects[0].Proof.Enabled);
+        var kept = Path.Combine(dir.Path, "kept.json");
+        SettingsStore.Save(bad, kept);
+        using (var doc = JsonDocument.Parse(File.ReadAllText(kept)))
+        {
+            Assert.Equal("yes", doc.RootElement.GetProperty("proof").GetProperty("enabled").GetString());
+            Assert.Equal(1, doc.RootElement.GetProperty("projects")[0].GetProperty("proof")[0].GetInt32());
+        }
+    }
+
+    // Plan 11: a project made from the shown profile takes its proof switch (a copy of its own).
+    [Fact]
+    public void Proof_CopiedIntoANewProject()
+    {
+        var s = new AppSettings();
+        s.Proof.Enabled = false;
+        var film = Projects.SaveAs(s, "Film X");
+        Assert.False(film.Proof.Enabled);
+        Assert.NotSame(s.Proof, film.Proof);
+        film.Proof.Enabled = true;
+        Assert.False(s.Proof.Enabled);
+    }
+
     [Fact]
     public void Corrupt_Defaults()
     {

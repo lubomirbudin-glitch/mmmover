@@ -89,6 +89,7 @@ public static class Projects
         to.Outputs = SettingsStore.Clone(from.Outputs);
         to.Notify = SettingsStore.Clone(from.Notify);
         to.AutoDrive = SettingsStore.Clone(from.AutoDrive);   // the destinations it added go with DestRoots
+        to.Proof = SettingsStore.Clone(from.Proof);   // plan 11
     }
 
     /// The project's name, or null for "No project" — what a job, history and the report record.
