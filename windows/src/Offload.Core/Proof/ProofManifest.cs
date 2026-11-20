@@ -48,6 +48,12 @@ public sealed partial class ProofManifest
 
     public static string OtsName(int generation) => FileName(generation) + ".ots";
 
+    [GeneratedRegex(@"\Aoffload_proof(_[0-9]{4,9})?\.json\z")]
+    private static partial Regex FileNameRegex();
+
+    /// `offload_proof.json` / `offload_proof_NNNN.json` (what FileName gives) — a file name, never a path.
+    public static bool IsFileName(string? name) => name != null && FileNameRegex().IsMatch(name);
+
     public static byte[] RootOf(IEnumerable<ProofFile> files) =>
         Merkle.Root(Merkle.Ordered(files.Select(f => (Convert.FromHexString(f.Sha256Hex), f.Size))));
 

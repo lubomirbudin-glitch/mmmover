@@ -1,5 +1,4 @@
 using System.Security.Cryptography;
-using System.Text.RegularExpressions;
 using Offload.Core.Proof.Ots;
 
 namespace Offload.Core.Proof;
@@ -31,7 +30,7 @@ public sealed class ProofServiceOptions
 /// `_REPORT` of every card folder that holds the manifest — also of a disk connected again later. The network is never
 /// asked under the store's mutex; after it the entry is re-read and the timestamps merged, so the app and the CLI may
 /// work the same entries at once. RunDue never throws: every problem is a log line and the entry's `lastError`.
-public sealed partial class ProofService : IDisposable
+public sealed class ProofService : IDisposable
 {
     /// Held while the .ots files on the disks are compared and written (and their `written` saved), so two services
     /// never interleave there: the later one sees what the earlier wrote.
@@ -347,39 +346,7 @@ public sealed partial class ProofService : IDisposable
             var report = Path.Combine(card, Layout.ReportDirName);
             var manifest = Path.Combine(report, e.Manifest);
             if (!File.Exists(manifest) || !Sha256Of(manifest).AsSpan().SequenceEqual(digest)) return null;
-
-            var path = manifest + ".ots";
-            if (!File.Exists(path))
-            {
-                NativeIO.WriteFileNew(path, bytes);
-                Log($"{Who(e)}: {(ots.IsComplete ? "complete" : "pending")} timestamp written to {path}");
-                return State(ots);
-            }
-            OtsFile old;
-            try
-            {
-                if (new FileInfo(path).Length > MaxOtsBytes) throw new FormatException($"larger than {MaxOtsBytes / (1024 * 1024)} MB");
-                old = OtsFile.Parse(File.ReadAllBytes(path));
-            }
-            catch (FormatException x)
-            {
-                Log($"{Who(e)}: {path} is not a timestamp ({x.Message}) — left as it is");
-                return ProofEntry.WrittenNone;
-            }
-            if (!old.Digest.AsSpan().SequenceEqual(digest))
-            {
-                Log($"{Who(e)}: {path} is a timestamp of another file — left as it is");
-                return ProofEntry.WrittenNone;
-            }
-            if (old.Contains(ots)) return State(old);
-            if (ots.Contains(old))
-            {
-                NativeIO.WriteFileReplacing(path, bytes);
-                Log($"{Who(e)}: {(ots.IsComplete ? "complete" : "more complete")} timestamp written to {path}");
-                return State(ots);
-            }
-            Log($"{Who(e)}: {path} has attestations this proof does not have — left as it is");
-            return State(old);
+            return PutOts(manifest + ".ots", digest, ots, bytes, m => Log($"{Who(e)}: {m}"));
         }
         catch (Exception x) when (x is IOException or IOError or UnauthorizedAccessException)
         {
@@ -388,8 +355,142 @@ public sealed partial class ProofService : IDisposable
         }
     }
 
+    /// The replacement rule of the backup's only rewritable proof file (design „Formát na disku“): `ots` (a timestamp of
+    /// `digest`, `bytes` = its serialization) into `path` — no file yet → a new file; one with the same digest that `ots`
+    /// contains and extends → replaced; one that contains `ots` → kept; anything else (another digest, not a timestamp,
+    /// a different tree) → kept as it is and logged. Returns what the file holds now (WrittenNone / Pending /
+    /// Complete). Disk errors throw (IOException, IOError, UnauthorizedAccessException); the caller holds DiskLockName.
+    internal static string PutOts(string path, byte[] digest, OtsFile ots, byte[] bytes, Action<string> log)
+    {
+        if (!File.Exists(path))
+        {
+            NativeIO.WriteFileNew(path, bytes);
+            log($"{(ots.IsComplete ? "complete" : "pending")} timestamp written to {path}");
+            return State(ots);
+        }
+        OtsFile old;
+        try
+        {
+            old = ReadOtsFile(path);
+        }
+        catch (FormatException x)
+        {
+            log($"{path} is not a timestamp ({x.Message}) — left as it is");
+            return ProofEntry.WrittenNone;
+        }
+        if (!old.Digest.AsSpan().SequenceEqual(digest))
+        {
+            log($"{path} is a timestamp of another file — left as it is");
+            return ProofEntry.WrittenNone;
+        }
+        if (old.Contains(ots)) return State(old);
+        if (ots.Contains(old))
+        {
+            NativeIO.WriteFileReplacing(path, bytes);
+            log($"{(ots.IsComplete ? "complete" : "more complete")} timestamp written to {path}");
+            return State(ots);
+        }
+        log($"{path} has attestations this proof does not have — left as it is");
+        return State(old);
+    }
+
     /// A real .ots is a few kB; a bigger file under that name is not read (it is not ours).
-    const long MaxOtsBytes = 4 * 1024 * 1024;
+    internal const long MaxOtsBytes = 4 * 1024 * 1024;
+
+    /// The timestamp in `path`; FormatException when it is larger than MaxOtsBytes or not a timestamp (disk errors throw).
+    internal static OtsFile ReadOtsFile(string path)
+    {
+        if (new FileInfo(path).Length > MaxOtsBytes) throw new FormatException($"larger than {MaxOtsBytes / (1024 * 1024)} MB");
+        return OtsFile.Parse(File.ReadAllBytes(path));
+    }
+
+    /// `mmmover proof upgrade <card folder>`: every `.ots` in `<card>/_REPORT` that is not in Bitcoin yet is upgraded
+    /// in place — its pending calendars asked (AllowedCalendar, as the queue), a Bitcoin attestation they give checked
+    /// against the block headers (a mismatch is never written, ruling R8; explorers unreachable = written, as the queue
+    /// does), the file replaced only by the rule of PutOts (under DiskLockName). One line per file; null when the folder
+    /// has no `_REPORT/*.ots`. Never touches the store. Only the caller's cancellation throws.
+    public async Task<IReadOnlyList<string>?> UpgradeFolder(string cardFolder, CancellationToken ct)
+    {
+        var report = Path.Combine(cardFolder, Layout.ReportDirName);
+        string[] files;
+        try
+        {
+            files = Directory.Exists(report)
+                ? [.. Directory.EnumerateFiles(report, "*.ots").Where(p => p.EndsWith(".ots", StringComparison.OrdinalIgnoreCase)).Order(StringComparer.Ordinal)]
+                : [];
+        }
+        catch (Exception x) when (x is IOException or UnauthorizedAccessException)
+        {
+            return [$"{report}: {x.Message}"];
+        }
+        if (files.Length == 0) return null;
+
+        var lines = new List<string>();
+        foreach (var path in files)
+        {
+            ct.ThrowIfCancellationRequested();
+            var name = Path.GetFileName(path);
+            try
+            {
+                lines.Add($"{name}: {await UpgradeOne(path, ct).ConfigureAwait(false)}");
+            }
+            catch (Exception x) when (x is IOException or IOError or UnauthorizedAccessException)
+            {
+                lines.Add($"{name}: {x.Message}");
+            }
+        }
+        return lines;
+    }
+
+    async Task<string> UpgradeOne(string path, CancellationToken ct)
+    {
+        OtsFile ots;
+        try
+        {
+            ots = ReadOtsFile(path);
+        }
+        catch (FormatException x)
+        {
+            return $"not a timestamp ({x.Message}) — left as it is";
+        }
+        if (ots.IsComplete) return $"anchored already (Bitcoin block {EarliestBitcoin(ots)})";
+        var digest = ots.Digest;
+        var pending = ots.Timestamp.All().Select(p => p.Attestation).OfType<PendingAttestation>().Select(p => p.Uri).Distinct().ToList();
+        int asked = pending.Count(u => Allowed(u));
+        if (asked == 0) return pending.Count == 0 ? "no calendar to ask — left as it is" : "none of its calendars is a public OpenTimestamps calendar — left as it is";
+
+        int added = await OtsCalendar.Upgrade(http, ots, options.AllowedCalendar, options.Timeout, ct).ConfigureAwait(false);
+        if (added == 0) return $"not in Bitcoin yet ({Calendars(asked)} asked) — Bitcoin confirms a few hours after the copy";
+
+        string what;
+        if (ots.IsComplete)
+        {
+            var check = await BitcoinHeaders.Verify(http, ots, options.HeaderSources, options.Timeout, ct).ConfigureAwait(false);
+            if (check.Outcome == BitcoinOutcome.Mismatch)
+                return $"a calendar returned a Bitcoin attestation that does not match block {check.Height} — left as it is";
+            what = check.Outcome == BitcoinOutcome.Verified
+                ? $"anchored in Bitcoin block {check.Height} ({ProofVerifier.Agree(check.Sources)})"
+                : $"anchored in Bitcoin block {EarliestBitcoin(ots)} (block not checked: {check.Problem})";
+        }
+        else what = $"more of the path to Bitcoin ({added} of {Calendars(asked)} answered), not in Bitcoin yet";
+
+        var notes = new List<string>();
+        using (var held = NamedLock.Acquire(DiskLockName, DiskLockTimeout))
+        {
+            if (held == null) return "another mmMover is writing proofs onto the disks — try again in a moment";
+            PutOts(path, digest, ots, ots.ToBytes(), notes.Add);
+        }
+        // PutOts says what it did, except when the file holds all of it already (another mmMover was quicker).
+        return $"{what} — " + (notes.Count == 0 ? "the file has it already" : string.Join("; ", notes));
+    }
+
+    bool Allowed(string uri)
+    {
+        try { return options.AllowedCalendar(uri); }
+        catch (Exception) { return false; }
+    }
+
+    static string Calendars(int n) => n == 1 ? "1 calendar" : $"{n} calendars";
 
     static string State(OtsFile f) => f.IsComplete ? ProofEntry.WrittenComplete : ProofEntry.WrittenPending;
 
@@ -399,11 +500,8 @@ public sealed partial class ProofService : IDisposable
         return SHA256.HashData(fs);
     }
 
-    [GeneratedRegex(@"\Aoffload_proof(_[0-9]{4,9})?\.json\z")]
-    private static partial Regex ManifestName();
-
     /// `offload_proof.json` / `offload_proof_NNNN.json` — a file name, never a path (the store is hand-editable).
-    static bool ValidManifestName(string name) => ManifestName().IsMatch(name);
+    static bool ValidManifestName(string name) => ProofManifest.IsFileName(name);
 
     static bool TryDigest(ProofEntry e, out byte[] digest)
     {
