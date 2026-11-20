@@ -185,11 +185,11 @@ static class CopyCommand
         foreach (var day in job.DayReports) Console.WriteLine(Msg.DayReportWritten(day));
         if (job.LocalReport is string local) Console.WriteLine(Msg.LocalReportWritten(local));
         if (status.LocalReportNote != null) Console.WriteLine(status.LocalReportNote);
-        AnchorProof(config, status);
         if (status.Note != null) Console.WriteLine(status.Note);
         if (status.Warning != null) Console.WriteLine("Warning: " + status.Warning);
         if (status.Error != null) Console.WriteLine(Msg.CliError + status.Error);
         Ntfy(config, plan, status, report);
+        AnchorProof(config, status);   // plan 11: last — its stamp (up to ProofWait) never delays the outcome or the push
         return ExitCode(config, status, report);
     }
 

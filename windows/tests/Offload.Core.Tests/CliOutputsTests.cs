@@ -139,6 +139,26 @@ public class CliOutputsTests
         Assert.Contains("proof not created: ", r.Err);   // the job's log line
     }
 
+    // Global constraint (the proof never delays the job): the stamp after the job comes last — the outcome lines (here the
+    // warning of an append onto an unverified backup) are printed before it, the Proof: line is the last one.
+    [Fact]
+    public void OutcomeLines_BeforeTheProofLine()
+    {
+        using var dir = new TempDir();
+        var (card, paths) = AppendFixtures.CopiedCard(dir, verify: false);
+        AppendFixtures.NewClip(card);
+
+        var r = Run(AppendCommand.Create(), [card, .. paths.SelectMany(p => new[] { "--into", p }), "--no-history", "--no-analyze"]);
+
+        var lines = r.Out.TrimEnd().Split(Environment.NewLine);
+        var warning = Array.FindLastIndex(lines, l => l.StartsWith("Warning: ", StringComparison.Ordinal));
+        var proof = Array.FindIndex(lines, l => l.StartsWith("Proof:", StringComparison.Ordinal));
+        Assert.True(warning >= 0, r.Out);
+        Assert.Equal(lines.Length - 1, proof);
+        Assert.True(warning < proof, r.Out);
+        Assert.Equal("Warning: " + Msg.UnverifiedEarlier(2), lines[warning]);
+    }
+
     // The same for an append: generation 2 gets its own proof by default, none with --no-proof.
     [Fact]
     public void Append_ProofByDefault_NoProofLeavesNoTrace()

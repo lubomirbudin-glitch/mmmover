@@ -56,6 +56,24 @@ public class CliNtfyTests
         Assert.Contains("ntfy: sent", r.Err);
     }
 
+    // Plan 11 (the proof never delays the job): the push goes out before the proof is stamped (up to 20 s with slow
+    // calendars), and the Proof: line is the last line of the output.
+    [Fact]
+    public void Ntfy_BeforeTheProofStamp()
+    {
+        using var dir = new TempDir();
+        using var server = new LocalHttp();
+
+        var r = Run(null, Card(dir), "-d", dir.Sub("d1"), "--no-history", "--no-analyze", "--ntfy", server.Url + "kanal-1");
+
+        Assert.Equal(0, r.Exit);
+        Assert.Single(server.Requests);
+        var sent = r.Err.IndexOf("ntfy: sent", StringComparison.Ordinal);
+        var stamp = r.Err.IndexOf("stamp failed at 0 of 0 calendars", StringComparison.Ordinal);   // the offline seam
+        Assert.True(sent >= 0 && stamp > sent, r.Err);
+        Assert.StartsWith("Proof: waiting for network", r.Out.TrimEnd().Split(Environment.NewLine)[^1]);
+    }
+
     // Final fix 1: an append notifies the EARLIER backup's project (Film X), not the --project given (Reklama Y); an
     // explicit --ntfy still wins.
     [Fact]

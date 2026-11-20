@@ -1131,8 +1131,10 @@ public sealed class OffloadJob
 
     /// Plan 11 (Offload Proof, design 5, 6, 10): the final record of the generation → the proof manifest into `_REPORT` of
     /// every card folder (ProofSeal: a new file only, never over a different one) and its entry into the queue, `queued`
-    /// (the proof service stamps it at the calendars). The job's result never changes: whatever fails — no file to prove,
-    /// no card folder written, the queue — is a log line and Status().ProofError, nothing else.
+    /// (the proof service stamps it at the calendars). Written into some folders only: the entry still names every
+    /// destination (ruling R9 — the service writes the .ots only where the manifest is, so it shows "on N of M disks") and
+    /// its lastError the folders that failed. The job's result never changes: a seal that wrote no folder, or threw (the
+    /// queue too), is a log line and Status().ProofError, nothing else.
     void SealProof(OffloadReport report, Action<string>? log)
     {
         string why;
@@ -1140,14 +1142,21 @@ public sealed class OffloadJob
         {
             var now = DateTime.UtcNow;
             var seal = ProofSeal.Seal(report, now, Environment.MachineName);
-            foreach (var line in seal?.Errors ?? []) log?.Invoke($"proof: {line}");
             if (seal == null) why = Msg.ProofNoFiles;
             else
             {
-                // Seal skips a card folder that is gone (an unplugged disk): the entry names the folders that hold it.
                 var name = ProofManifest.FileName(seal.Manifest.Generation);
-                var holding = report.Destinations.Where(d => seal.Written.Contains(Path.Combine(d.CardPath, Layout.ReportDirName, name))).ToList();
-                if (holding.Count == 0) why = seal.Errors.Count > 0 ? string.Join("; ", seal.Errors) : Msg.ProofNoCardFolder;
+                var failed = new List<string>(seal.Errors);
+                int holding = 0;
+                foreach (var d in report.Destinations)
+                {
+                    var path = Path.Combine(d.CardPath, Layout.ReportDirName, name);
+                    if (seal.Written.Contains(path)) holding++;
+                    // Seal skips a card folder that is gone (an unplugged disk) without an error line: named here.
+                    else if (!seal.Errors.Any(e => e.StartsWith(path + ":", StringComparison.Ordinal))) failed.Add($"{path}: {Msg.CardFolderGone}");
+                }
+                foreach (var line in failed) log?.Invoke($"proof: {line}");
+                if (holding == 0) why = failed.Count > 0 ? string.Join("; ", failed) : Msg.ProofNoCardFolder;
                 else
                 {
                     var entry = new ProofEntry
@@ -1159,13 +1168,14 @@ public sealed class OffloadJob
                         CardName = seal.Manifest.CardName,
                         Date = seal.Manifest.Date,
                         Generation = seal.Manifest.Generation,
-                        CardPaths = [.. holding.Select(d => d.CardPath)],
-                        VolumeSerials = [.. holding.Select(d => d.VolumeSerial)],
+                        CardPaths = [.. report.Destinations.Select(d => d.CardPath)],
+                        VolumeSerials = [.. report.Destinations.Select(d => d.VolumeSerial)],
                         State = ProofState.Queued,
+                        LastError = failed.Count > 0 ? string.Join("; ", failed) : null,
                     };
                     new ProofStore(Config.ProofFolder ?? ProofStore.DefaultFolder).Add(entry);
                     Update(s => s with { ProofId = entry.Id, ProofError = null });
-                    log?.Invoke($"proof: {name} sealed in {holding.Count} of {report.Destinations.Count} card folders — queued for anchoring");
+                    log?.Invoke($"proof: {name} sealed in {holding} of {report.Destinations.Count} card folders — queued for anchoring");
                     try { ProofSealed?.Invoke(entry.Id); }
                     catch (Exception x) { log?.Invoke($"proof: a listener failed: {x.Message}"); }
                     return;

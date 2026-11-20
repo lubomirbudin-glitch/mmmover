@@ -370,6 +370,50 @@ public class ProofJobTests
         Assert.Equal(0, Offload.Cli.CopyCommand.ExitCode(job.Config, s, job.Report));
     }
 
+    // Ruling R9: a different proof in one card folder only — the job as it is, the proof sealed in the other folder; the
+    // entry still names both destinations (the .ots goes only where the manifest is: "on 1 of 2 disks") and its
+    // lastError, like the job's log, names the folder that failed. Not a ProofError: the proof was created.
+    [Fact]
+    public void PartialSeal_EntryKeepsEveryDisk_LastErrorNamesTheFolder()
+    {
+        using var dir = new TempDir();
+        var card = dir.Sub("A001");
+        Card(card);
+        var store = Store(dir);
+        const string Other = """{"another":"proof"}""";
+        var options = AppendFixtures.Options();
+        var job = new OffloadJob(Config(card, [dir.Sub("d1"), dir.Sub("d2")], store.Folder), options);
+        options.BeforeVerify = () =>
+        {
+            var p = job.Plan!.CardPaths[1];
+            Directory.CreateDirectory(Path.Combine(p, Layout.ReportDirName));
+            File.WriteAllText(ProofPath(p), Other);
+        };
+        var log = new List<string>();
+
+        job.Run(line => { lock (log) log.Add(line); });
+
+        var s = job.Status();
+        Assert.Equal(JobPhase.Done, s.Phase);
+        Assert.True(s.SafeToEject);
+        Assert.True(s.SafeToFormat);
+        Assert.Null(s.Warning);
+        Assert.Null(s.ProofError);
+        var entry = Assert.Single(store.All());
+        Assert.Equal(entry.Id, s.ProofId);
+        var (p1, p2) = (job.Plan!.CardPaths[0], job.Plan.CardPaths[1]);
+        Assert.Equal([p1, p2], entry.CardPaths);
+        Assert.Equal(job.Report!.Destinations.Select(d => d.VolumeSerial), entry.VolumeSerials);
+        Assert.Equal([ProofEntry.WrittenNone, ProofEntry.WrittenNone], entry.Written);
+        var why = $"{ProofPath(p2)}: a different proof of generation 1 is there already";
+        Assert.Equal(why, entry.LastError);
+        Assert.DoesNotContain(p1, entry.LastError);
+        Assert.Contains($"proof: {why}", log);
+        Assert.Contains("proof: offload_proof.json sealed in 1 of 2 card folders — queued for anchoring", log);
+        Assert.Equal(entry.Digest, Sha(File.ReadAllBytes(ProofPath(p1))));
+        Assert.Equal(Other, File.ReadAllText(ProofPath(p2)));   // never replaced
+    }
+
     [Fact]
     public void Append_SealsGeneration2()
     {
