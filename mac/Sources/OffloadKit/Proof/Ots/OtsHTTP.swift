@@ -21,13 +21,27 @@ struct OtsOutcome<T: Sendable>: Sendable {
     let error: String?
 }
 
+/// What a redirect does (OtsHTTP.redirectStep).
+enum OtsRedirect: Equatable {
+    /// Followed: the host that was asked, the same scheme or https.
+    case follow
+    /// Not followed, the 30x is the answer ("HTTP 301"): from https to http, or to a scheme that is not http(s).
+    case stop
+    /// Refused: another host ("redirected to another host").
+    case refuse
+}
+
 /// Plan 11 (Windows `OtsHttp`): HTTP for the calendars and the block explorers — one URLSession (ephemeral: no cache,
-/// no cookies), `User-Agent: mmMover/<version>`, at most 64 kB of a body, a redirect followed only to the host that was
-/// asked (the task's delegate refuses any other). `protocolClasses`: the tests answer with a URLProtocol stub, never the
-/// network. A failure is never an exception for the callers of `withinEach` — only their own cancellation throws.
+/// no cookies), `User-Agent: mmMover/<version>` and a fixed `Accept-Language` (CFNetwork would send the user's
+/// languages), at most 64 kB of a body, a redirect followed only to the host that was asked (the task's delegate refuses
+/// any other, never follows https to http) and the answer taken only from it. `protocolClasses`: the tests answer with
+/// a URLProtocol stub, never the network. A failure is never an exception for the callers of `withinEach` — only their
+/// own cancellation throws.
 public final class OtsHTTP: @unchecked Sendable {
     public static let maxBody = 64 * 1024
     static let userAgent = "\(Product.name)/\(OffloadVersion.string)"
+    /// Nothing about the user: only the nonce'd commitment and the User-Agent say anything about this machine.
+    static let acceptLanguage = "en"
     static let tooBig = "answer too big (over 64 kB)"
 
     let session: URLSession
@@ -53,10 +67,12 @@ public final class OtsHTTP: @unchecked Sendable {
         }
         var r = request
         r.setValue(OtsHTTP.userAgent, forHTTPHeaderField: "User-Agent")
+        r.setValue(OtsHTTP.acceptLanguage, forHTTPHeaderField: "Accept-Language")
         let guardian = RedirectGuard(asked: asked)
         let (bytes, response) = try await session.bytes(for: r, delegate: guardian)
         defer { bytes.task.cancel() }
         if let host = guardian.refusedHost { throw OtsNetworkError("redirected to another host (\(host))") }
+        if let elsewhere = OtsHTTP.elsewhere(asked: asked, answered: response.url) { throw OtsNetworkError(elsewhere) }
         let status = (response as? HTTPURLResponse)?.statusCode ?? 0
         if status != 200 { return (status: status, body: []) }
         if response.expectedContentLength > Int64(OtsHTTP.maxBody) { throw OtsNetworkError(OtsHTTP.tooBig) }
@@ -73,6 +89,26 @@ public final class OtsHTTP: @unchecked Sendable {
         guard let a = asked.host?.lowercased(), let b = next.host?.lowercased(), a == b else { return false }
         let scheme = next.scheme?.lowercased()
         return scheme == asked.scheme?.lowercased() || scheme == "https"
+    }
+
+    /// One redirect from `current` to `next` of a request for `asked`, as Windows' SocketsHttpHandler and `OtsHttp.Send`
+    /// take it: never from https to http nor to a scheme that is not http(s) — the 30x is the answer (Windows: "HTTP
+    /// 301"); to the host that was asked followed (followsRedirect); to another host refused ("redirected to another
+    /// host", as Windows says once it got there).
+    static func redirectStep(asked: URL, from current: URL, to next: URL) -> OtsRedirect {
+        let scheme = next.scheme?.lowercased()
+        let web = scheme == "https" || scheme == "http"
+        let downgrade = current.scheme?.lowercased() == "https" && scheme != "https"
+        if !web || downgrade { return .stop }
+        return followsRedirect(from: asked, to: next) ? .follow : .refuse
+    }
+
+    /// Windows `OtsHttp.Send` after the answer: it counts only from the host that was asked (any case), over the same
+    /// scheme or https — else the reason, "redirected to another host (<host>)".
+    static func elsewhere(asked: URL, answered: URL?) -> String? {
+        guard let a = answered, !followsRedirect(from: asked, to: a) else { return nil }
+        let host = (a.host ?? "?").lowercased()
+        return "redirected to another host (\(host))"
     }
 
     /// `call(i)` for every i in 0..<count at once, each with its own `timeout`: its result, or (nil, why) when it failed
@@ -138,8 +174,9 @@ public final class OtsHTTP: @unchecked Sendable {
     }
 }
 
-/// The task's delegate: follows a redirect only to the host that was asked (OtsHTTP.followsRedirect), refuses and
-/// remembers any other — `send` then fails with "redirected to another host".
+/// The task's delegate (OtsHTTP.redirectStep): follows a redirect only to the host that was asked; from https to http
+/// it stops (the 30x is the answer); any other host it refuses and remembers — `send` then fails with "redirected to
+/// another host".
 final class RedirectGuard: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
     let asked: URL
     private let lock = NSLock()
@@ -155,9 +192,19 @@ final class RedirectGuard: NSObject, URLSessionTaskDelegate, @unchecked Sendable
 
     func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
                     newRequest request: URLRequest) async -> URLRequest? {
-        if let next = request.url, OtsHTTP.followsRedirect(from: asked, to: next) { return request }
-        refuse(request.url?.host ?? "?")
-        return nil
+        guard let next = request.url else {
+            refuse("?")
+            return nil
+        }
+        switch OtsHTTP.redirectStep(asked: asked, from: response.url ?? asked, to: next) {
+        case .follow:
+            return request
+        case .stop:
+            return nil
+        case .refuse:
+            refuse(next.host ?? "?")
+            return nil
+        }
     }
 
     private func refuse(_ host: String) {
