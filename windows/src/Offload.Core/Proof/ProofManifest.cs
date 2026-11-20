@@ -17,9 +17,9 @@ public sealed partial class ProofManifest
     public const int CurrentVersion = 1;
     public const string MerkleScheme = "rfc6962-sha256";
 
-    [GeneratedRegex("^[0-9a-f]{64}$")] private static partial Regex Hex64();
-    [GeneratedRegex("^[0-9a-f]{16}$")] private static partial Regex Hex16();
-    [GeneratedRegex("^[0-9a-f]{32}$")] private static partial Regex Hex32();
+    [GeneratedRegex(@"\A[0-9a-f]{64}\z")] private static partial Regex Hex64();
+    [GeneratedRegex(@"\A[0-9a-f]{16}\z")] private static partial Regex Hex16();
+    [GeneratedRegex(@"\A[0-9a-f]{32}\z")] private static partial Regex Hex32();
 
     public int Version { get; private init; } = CurrentVersion;
     public required string Id { get; init; }
@@ -139,27 +139,49 @@ public sealed partial class ProofManifest
 
     public byte[] ToBytes() => Jcs.Serialize(ToJson());
 
+    /// The largest integer canonical JSON (RFC 8785: IEEE doubles) holds exactly, 2^53 − 1.
+    public const long MaxSafeInteger = 9007199254740991;
+
+    /// FormatException for anything that is not a version-1 proof manifest — also for what canonical JSON or the Merkle
+    /// tree could not hold (a size past MaxSafeInteger, a hash with anything after its hex digits), so nothing later
+    /// throws on a parsed manifest. Keys it does not know (a later writer's) are ignored.
     public static ProofManifest Parse(byte[] bytes)
+    {
+        JsonNode? node;
+        try
+        {
+            node = JsonNode.Parse(bytes);
+        }
+        catch (Exception e) when (e is JsonException or ArgumentException)
+        {
+            throw new FormatException("The proof file is not valid: " + e.Message, e);
+        }
+        return Parse(node);
+    }
+
+    /// Parse of the JSON already read (the verifier keeps it for its canonical check).
+    public static ProofManifest Parse(JsonNode? node)
     {
         try
         {
-            if (JsonNode.Parse(bytes) is not JsonObject o) throw new FormatException("The proof is not a JSON object.");
+            if (node is not JsonObject o) throw new FormatException("The proof is not a JSON object.");
             if (Str(o, "format") != FormatName) throw new FormatException("Not an mmMover proof (format).");
-            int version = (int)Int(o, "version");
+            long version = Int(o, "version", long.MinValue, long.MaxValue);
             if (version > CurrentVersion) throw new FormatException($"Proof version {version} is newer than this program understands.");
+            if (version != CurrentVersion) throw new FormatException($"Missing or wrong \"version\" ({version}).");
             var tool = Obj(o, "tool");
             var card = Obj(o, "card");
             var merkle = Obj(o, "merkle");
             var files = Arr(o, "files").Select(n => n as JsonObject ?? throw new FormatException("files[] entry")).Select(f => new ProofFile(
-                Str(f, "path"), Int(f, "size"), Prefixed(f, "sha256", "sha256:", Hex64()), Prefixed(f, "xxh64", "xxh64:", Hex16()),
+                Str(f, "path"), Int(f, "size", 0, MaxSafeInteger), Prefixed(f, "sha256", "sha256:", Hex64()), Prefixed(f, "xxh64", "xxh64:", Hex16()),
                 f["xxh128"] == null ? null : Prefixed(f, "xxh128", "xxh128:", Hex32()))).ToList();
-            var excluded = o["excluded"] == null ? [] : Arr(o, "excluded").Select(n => n as JsonObject ?? throw new FormatException("excluded[] entry"))
+            var excluded = !o.ContainsKey("excluded") ? [] : Arr(o, "excluded").Select(n => n as JsonObject ?? throw new FormatException("excluded[] entry"))
                 .Select(e => new ProofExcluded(Str(e, "path"), Str(e, "reason"))).ToList();
             var mhl = Arr(o, "mhl").Select(n => n as JsonObject ?? throw new FormatException("mhl[] entry"))
-                .Select(m => new ProofMhl((int)Int(m, "destination"), Str(m, "path"), Prefixed(m, "sha256", "sha256:", Hex64()))).ToList();
+                .Select(m => new ProofMhl((int)Int(m, "destination", 1, int.MaxValue), Str(m, "path"), Prefixed(m, "sha256", "sha256:", Hex64()))).ToList();
             return new ProofManifest
             {
-                Version = version,
+                Version = (int)version,
                 Id = Str(o, "id"),
                 Created = Str(o, "created"),
                 ToolName = Str(tool, "name"),
@@ -169,12 +191,12 @@ public sealed partial class ProofManifest
                 CardName = Str(card, "name"),
                 Date = Str(card, "date"),
                 Source = Str(card, "source"),
-                Generation = (int)Int(card, "generation"),
+                Generation = (int)Int(card, "generation", 1, int.MaxValue),
                 Project = card["project"] == null ? null : Str(card, "project"),
                 Complete = o["complete"]?.GetValue<bool>() ?? throw new FormatException("complete"),
                 Files = files,
                 Excluded = excluded,
-                MerkleCount = (int)Int(merkle, "count"),
+                MerkleCount = (int)Int(merkle, "count", 0, int.MaxValue),
                 MerkleRootHex = Prefixed(merkle, "root", "sha256:", Hex64()),
                 Mhl = mhl,
             };
@@ -188,8 +210,10 @@ public sealed partial class ProofManifest
     static string Str(JsonObject o, string key) =>
         o[key] is JsonValue v && v.TryGetValue<string>(out var s) ? s : throw new FormatException($"Missing or wrong \"{key}\".");
 
-    static long Int(JsonObject o, string key) =>
-        o[key] is JsonValue v && v.TryGetValue<long>(out var n) ? n : throw new FormatException($"Missing or wrong \"{key}\".");
+    /// An integer in [min, max] (checked before any cast to int, so 2^32 + 1 is never read as 1).
+    static long Int(JsonObject o, string key, long min, long max) =>
+        o[key] is JsonValue v && v.TryGetValue<long>(out var n) ? n >= min && n <= max ? n : throw new FormatException($"\"{key}\" is out of range ({n}).")
+            : throw new FormatException($"Missing or wrong \"{key}\".");
 
     static JsonObject Obj(JsonObject o, string key) => o[key] as JsonObject ?? throw new FormatException($"Missing or wrong \"{key}\".");
 

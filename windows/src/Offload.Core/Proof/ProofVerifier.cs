@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json.Nodes;
 using Offload.Core.Proof.Ots;
 
 namespace Offload.Core.Proof;
@@ -53,7 +54,8 @@ public static class ProofVerifier
     /// `Label:` padded to one column (at least one space after it).
     static string L(string label, string text) => (label + ":").PadRight(10) + " " + text;
 
-    sealed record Loaded(string Name, string Path, byte[] Bytes, ProofManifest? Manifest, string? Error);
+    /// `Json`: the manifest as read (its canonical check is on it, so a key a later writer added is no edit).
+    sealed record Loaded(string Name, string Path, byte[] Bytes, JsonNode? Json, ProofManifest? Manifest, string? Error);
 
     /// One manifest's own checks: `RootOk` = canonical with its Merkle root and count right; `Lines` = Anchor / Warning;
     /// `Reason` = why it is not OK; `Time` / `Block` = the checked (or claimed) block.
@@ -70,7 +72,7 @@ public static class ProofVerifier
             lines.Add(L("File", file));
             return Final(lines, ProofOutcome.Failed, "the file is not there");
         }
-        var card = FindCard(Path.GetDirectoryName(full));
+        var (card, found) = FindCard(Path.GetDirectoryName(full));
         var rel = card != null ? Relative(card, full) : Path.GetFileName(full);
         lines.Add(L("File", rel));
         string hex;
@@ -90,7 +92,7 @@ public static class ProofVerifier
             return Final(lines, ProofOutcome.Failed, NoProofForFile);
         }
 
-        var loaded = Manifests(card).Select(Load).ToList();
+        var loaded = found.Select(Load).ToList();
         var matches = new List<(Loaded M, ProofFile Entry)>();
         foreach (var m in loaded)
         {
@@ -102,6 +104,7 @@ public static class ProofVerifier
         if (matches.Count == 0)
         {
             lines.Add(L("SHA-256", hex));
+            if (loaded.Count == 0) return Final(lines, ProofOutcome.Failed, NoProofForFile);
             if (unreadable.Count == loaded.Count) return Final(lines, ProofOutcome.Failed, unreadable[0].Error!);
             foreach (var m in loaded.Where(m => m.Manifest != null))
             {
@@ -152,11 +155,11 @@ public static class ProofVerifier
             lines.Add(L("Card", cardFolder));
             return Final(lines, ProofOutcome.Failed, "the folder is not there");
         }
-        var card = FindCard(full);
+        var (card, found) = FindCard(full);
         lines.Add(L("Card", card ?? full));
-        if (card == null) return Final(lines, ProofOutcome.Failed, NoProofForFolder);
+        if (card == null || found.Count == 0) return Final(lines, ProofOutcome.Failed, NoProofForFolder);
 
-        var loaded = Manifests(card).Select(Load).ToList();
+        var loaded = found.Select(Load).ToList();
         bool several = loaded.Count > 1;
         using var http = Http(o);
         int ok = 0, changed = 0, missing = 0, unreadable = 0;
@@ -237,12 +240,27 @@ public static class ProofVerifier
     }
 
     /// The manifest is canonical with its Merkle root and count right; the .ots next to it is a timestamp of its bytes;
-    /// a Bitcoin attestation in it matches the block (unless Offline).
+    /// a Bitcoin attestation in it matches the block (unless Offline). Whatever a hostile manifest still makes throw is
+    /// FAILED — not a valid proof manifest, never an exception (only the caller's cancellation throws).
     static async Task<ManifestCheck> Check(Loaded m, ProofVerifyOptions o, HttpClient? http, CancellationToken ct)
+    {
+        try
+        {
+            return await CheckManifest(m, o, http, ct).ConfigureAwait(false);
+        }
+        catch (Exception x) when (x is FormatException or ArgumentException or OverflowException or InvalidOperationException)
+        {
+            return new(ProofOutcome.Failed, false, [], $"{m.Name} is not a valid proof manifest ({x.Message.TrimEnd('.')})", null, null);
+        }
+    }
+
+    static async Task<ManifestCheck> CheckManifest(Loaded m, ProofVerifyOptions o, HttpClient? http, CancellationToken ct)
     {
         var man = m.Manifest!;
         var lines = new List<string>();
-        if (!Jcs.Serialize(man.ToJson()).AsSpan().SequenceEqual(m.Bytes))
+        // Canonical as read (RFC 8785 of the parsed JSON, keys a later writer added included), not as this version
+        // would write the fields it knows.
+        if (!Jcs.Serialize(m.Json).AsSpan().SequenceEqual(m.Bytes))
             return new(ProofOutcome.Failed, false, lines, "the manifest is not canonical — it was edited", null, null);
         if (Convert.ToHexStringLower(man.ComputeRoot()) != man.MerkleRootHex)
             return new(ProofOutcome.Failed, false, lines, "the Merkle root in the manifest does not match its files", null, null);
@@ -374,12 +392,13 @@ public static class ProofVerifier
         catch (Exception x) when (x is ArgumentException or NotSupportedException or PathTooLongException) { return null; }
     }
 
-    /// The nearest folder (this one or above) whose `_REPORT` holds a proof manifest.
-    static string? FindCard(string? dir)
+    /// The nearest folder (this one or above) whose `_REPORT` holds a proof manifest, with the manifests found there
+    /// (never listed twice: a manifest gone in between can not leave an empty list).
+    static (string? Card, List<string> Manifests) FindCard(string? dir)
     {
         for (var d = dir; !string.IsNullOrEmpty(d); d = Path.GetDirectoryName(d))
-            if (Manifests(d).Count > 0) return d;
-        return null;
+            if (Manifests(d) is { Count: > 0 } found) return (d, found);
+        return (null, []);
     }
 
     /// `<card>/_REPORT/offload_proof.json`, `offload_proof_NNNN.json` …, generation 1 first.
@@ -404,20 +423,23 @@ public static class ProofVerifier
         var name = Path.GetFileName(path);
         try
         {
-            if (new FileInfo(path).Length > MaxManifestBytes) return new(name, path, [], null, $"{name} is larger than 256 MB — not a proof manifest");
+            if (new FileInfo(path).Length > MaxManifestBytes) return new(name, path, [], null, null, $"{name} is larger than 256 MB — not a proof manifest");
             var bytes = File.ReadAllBytes(path);
             try
             {
-                return new(name, path, bytes, ProofManifest.Parse(bytes), null);
+                JsonNode? json;
+                try { json = JsonNode.Parse(bytes); }
+                catch (Exception x) when (x is System.Text.Json.JsonException or ArgumentException) { throw new FormatException("The proof file is not valid: " + x.Message, x); }
+                return new(name, path, bytes, json, ProofManifest.Parse(json), null);
             }
             catch (Exception x) when (x is not OperationCanceledException)
             {
-                return new(name, path, bytes, null, $"{name} is not a valid proof manifest ({x.Message.TrimEnd('.')})");
+                return new(name, path, bytes, null, null, $"{name} is not a valid proof manifest ({x.Message.TrimEnd('.')})");
             }
         }
         catch (Exception x) when (x is IOException or UnauthorizedAccessException)
         {
-            return new(name, path, [], null, $"{name} could not be read: {x.Message}");
+            return new(name, path, [], null, null, $"{name} could not be read: {x.Message}");
         }
     }
 

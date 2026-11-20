@@ -57,10 +57,11 @@ public class ProofVerifierTests
         public string ManifestPath => System.IO.Path.Combine(Path, "_REPORT", "offload_proof.json");
         public string OtsPath => ManifestPath + ".ots";
 
-        /// `digest → append(nonce) → sha256 → Bitcoin(height)` next to the manifest; returns the attested message.
-        public byte[] WriteCompleteOts(ulong height = Height)
+        /// `digest → append(nonce) → sha256 → Bitcoin(height)` next to the manifest (`digest`: the sealed manifest's
+        /// unless given); returns the attested message.
+        public byte[] WriteCompleteOts(ulong height = Height, byte[]? digest = null)
         {
-            var f = OtsFile.For(Seal.Digest);
+            var f = OtsFile.For(digest ?? Seal.Digest);
             var node = f.Timestamp.Add(OtsOp.Append(Nonce)).Add(OtsOp.Sha256);
             node.Add(new BitcoinAttestation(height));
             System.IO.File.WriteAllBytes(OtsPath, f.ToBytes());
@@ -472,6 +473,60 @@ public class ProofVerifierTests
 
         Assert.Equal(ProofOutcome.NotYet, v.Outcome);
         Assert.Equal(Height, v.Block);
+    }
+
+    // Final fix A3: an edited (hostile) manifest is a line, never an exception — a hash with a trailing "\n" (`$` matched
+    // before it), a size past 2^53 − 1 (canonical JSON cannot hold it), `excluded` that is not a list, a version that is
+    // not 1. Both the file and the folder: FAILED — not a valid proof manifest (why).
+    [Fact]
+    public async Task HostileManifest_FailedNeverAnException()
+    {
+        using var card = new Card();
+        using var explorers = new Explorers(card.WriteCompleteOts());
+        using var o = new Options(explorers.Urls);
+        var text = File.ReadAllText(card.ManifestPath);
+        var c = Sha(card.Files["CLIP/C.mov"]);
+        foreach (var (hostile, why) in new[]
+        {
+            (text.Replace(c + "\"", c + "\\n\""), "sha256"),
+            (text.Replace("\"size\":10,", "\"size\":9007199254740992,"), "size"),
+            (text.Replace(",\"files\":[", ",\"excluded\":5,\"files\":["), "excluded"),
+            (text.Replace("\"version\":1", "\"version\":0"), "version"),
+        })
+        {
+            Assert.NotEqual(text, hostile);
+            File.WriteAllBytes(card.ManifestPath, Encoding.UTF8.GetBytes(hostile));
+            foreach (var v in new[]
+            {
+                await ProofVerifier.VerifyFile(card.File("CLIP/A.mov"), o.Value, default),
+                await ProofVerifier.VerifyFolder(card.Path, o.Value, default),
+            })
+            {
+                Assert.Equal(ProofOutcome.Failed, v.Outcome);
+                Assert.StartsWith("RESULT:    FAILED — offload_proof.json is not a valid proof manifest (", Last(v));
+                Assert.Contains(why, Last(v));
+            }
+        }
+    }
+
+    // Final fix C1: a key a later writer added (canonical, anchored) is no edit — the canonical check is on the parsed
+    // JSON, not on what this version makes of it.
+    [Fact]
+    public async Task ExtraKeyOfALaterWriter_Ok()
+    {
+        using var card = new Card();
+        var node = System.Text.Json.Nodes.JsonNode.Parse(File.ReadAllBytes(card.ManifestPath))!.AsObject();
+        node["later"] = new System.Text.Json.Nodes.JsonObject { ["note"] = "a newer mmMover" };
+        var bytes = Jcs.Serialize(node);
+        File.WriteAllBytes(card.ManifestPath, bytes);
+        using var explorers = new Explorers(card.WriteCompleteOts(digest: SHA256.HashData(bytes)));
+        using var o = new Options(explorers.Urls);
+
+        var file = await ProofVerifier.VerifyFile(card.File("CLIP/A.mov"), o.Value, default);
+        var folder = await ProofVerifier.VerifyFolder(card.Path, o.Value, default);
+
+        Assert.Equal(ProofOutcome.Ok, file.Outcome);
+        Assert.Equal(ProofOutcome.Ok, folder.Outcome);
     }
 
     // A file in no card folder with a proof, a file that is not there: FAILED with a reason.

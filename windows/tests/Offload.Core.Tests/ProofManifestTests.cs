@@ -103,6 +103,35 @@ public class ProofManifestTests
         Assert.Throws<FormatException>(() => ProofManifest.Parse("not json"u8.ToArray()));
     }
 
+    // Final fix A3: what canonical JSON or the Merkle tree cannot hold is refused by Parse (a FormatException, never one
+    // later): a hash with a trailing "\n", numbers out of their range (also past int, which a cast would wrap), a
+    // version that is not 1, `excluded` that is no list.
+    [Fact]
+    public void Parse_RefusesHashesAndNumbersOutOfRange()
+    {
+        var text = Encoding.UTF8.GetString(ProofManifest.FromReport(Synthetic(), [new ProofMhl(1, "ascmhl/0001_A001.mhl", Sha("mhl"))], "id-1",
+            new DateTime(2026, 11, 19, 9, 8, 7, DateTimeKind.Utc), "PC").ToBytes());
+        ProofManifest.Parse(Encoding.UTF8.GetBytes(text));
+        var c = Sha("c");
+        foreach (var hostile in new[]
+        {
+            text.Replace(c + "\"", c + "\\n\""),
+            text.Replace("\"size\":30,", "\"size\":9007199254740992,"),
+            text.Replace("\"size\":30,", "\"size\":-1,"),
+            text.Replace("\"version\":1", "\"version\":0"),
+            text.Replace("\"version\":1", "\"version\":4294967297"),
+            text.Replace("\"generation\":1", "\"generation\":0"),
+            text.Replace("\"generation\":1", "\"generation\":4294967297"),
+            text.Replace("\"count\":3", "\"count\":-1"),
+            text.Replace("\"destination\":1", "\"destination\":0"),
+            text.Replace("\"excluded\":[", "\"excluded\":5,\"x\":["),
+        })
+        {
+            Assert.NotEqual(text, hostile);
+            Assert.Throws<FormatException>(() => ProofManifest.Parse(Encoding.UTF8.GetBytes(hostile)));
+        }
+    }
+
     [Fact]
     public void FileNames()
     {
