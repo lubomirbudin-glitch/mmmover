@@ -485,18 +485,33 @@ struct RunningCard: View {
 }
 
 /// The card row's two verdicts (Windows R5), never merged: "Safe to eject" and "Safe to format" — green only when the
-/// card may be formatted (JobProgress.chips).
+/// card may be formatted (JobProgress.chips). Plan 11: the proof chip beside them (its tooltip on hover); it goes under
+/// them when the row has no room (Windows WrapPanel).
 struct VerdictChips: View {
     @Environment(\.palette) private var p
     let state: JobCardState
 
     var body: some View {
         if let eject = state.ejectChip, let format = state.formatChip {
-            HStack(spacing: 8) {
-                chip(eject)
-                chip(format)
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 8) {
+                    chip(eject)
+                    chip(format)
+                    proof
+                }
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(spacing: 8) {
+                        chip(eject)
+                        chip(format)
+                    }
+                    proof
+                }
             }
         }
+    }
+
+    @ViewBuilder private var proof: some View {
+        if let c = state.proofChip { chip(c).help(state.proofTooltip ?? "") }
     }
 
     private func chip(_ c: CardChip) -> some View {

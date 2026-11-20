@@ -35,6 +35,79 @@ extension JobProgress {
     }
 }
 
+/// Plan 11 (Offload Proof, spec „Fronta a stavy“; Windows `JobCard.ProofChip` / `ProofTooltip`): the third chip of the card
+/// row, beside the two verdicts.
+extension JobProgress {
+    /// Where the proof of this offload is in the queue. `enabled`: the job's proof switch (`JobConfig.proof`); `error`: why
+    /// the job sealed none (`JobStatus.proofError`); `entry`: its queue entry as the proof service last saved it (nil =
+    /// nothing sealed, or not read yet). Off or nothing sealed → no chip. Never says anything about the copy: the
+    /// verdicts stay as they are.
+    public static func proofChip(enabled: Bool, error: String?, entry: ProofEntry?) -> CardChip? {
+        guard enabled else { return nil }
+        if error != nil { return CardChip(text: proofNotCreated, tone: .error) }
+        guard let e = entry else { return nil }
+        switch e.state {
+        case .queued:
+            return CardChip(text: "Proof: waiting for network", tone: .waiting)
+        case .pending:
+            return CardChip(text: "Proof: anchoring", tone: .waiting)
+        case .complete:
+            // Ruling R9: a partial seal keeps every disk — the one the manifest never reached counts as missing.
+            let disks = proofDisks(e)
+            if disks.on < disks.of {
+                let of: String = "\(disks.of) " + Texts.plural(disks.of, "disk", "disks")
+                return CardChip(text: "Proof: anchored · on \(disks.on) of " + of, tone: .warning)
+            }
+            return CardChip(text: "Proof: anchored", tone: .ok)
+        case .failed:
+            return CardChip(text: proofNotCreated, tone: .error)   // the queue could not finish it
+        }
+    }
+
+    /// The proof chip's tooltip (proofChip's arguments): what "anchoring" waits for, the block and its time (`zone`: the
+    /// Mac's own unless given), which disks still miss the proof, why none was created; nil where the chip says it all.
+    public static func proofTooltip(enabled: Bool, error: String?, entry: ProofEntry?, zone: TimeZone = .current) -> String? {
+        guard enabled else { return nil }
+        if let error { return error }
+        guard let e = entry else { return nil }
+        switch e.state {
+        case .queued:
+            return nil
+        case .pending:
+            return "Bitcoin confirms the anchor in a few hours. mmMover finishes it in the background — keep it running or open it later."
+        case .complete:
+            let disks = proofDisks(e)
+            if disks.on < disks.of { return "Connect the other disks — mmMover writes the finished proof onto them." }
+            // Final fix C3: a block the explorers could not check yet is never shown as checked (the queue checks it again).
+            if e.bitcoinTime == nil, let height = e.bitcoinHeight {
+                return "Bitcoin block \(height) (block time not checked yet) — mmMover checks it again later."
+            }
+            return anchorText(e, zone) + " — the files existed unchanged no later than this."
+        case .failed:
+            return e.lastError ?? "the proof could not be finished"
+        }
+    }
+
+    static let proofNotCreated = "Proof: not created"
+
+    /// How many card folders of the entry hold the finished proof, of how many.
+    static func proofDisks(_ e: ProofEntry) -> (on: Int, of: Int) {
+        (e.written.filter { $0 == ProofEntry.writtenComplete }.count, e.cardPaths.count)
+    }
+
+    /// "Bitcoin block 912345 · 2026-11-20 00:41" (in `zone`); the block alone when the explorers gave no time.
+    static func anchorText(_ e: ProofEntry, _ zone: TimeZone) -> String {
+        let block: String = e.bitcoinHeight.map { "Bitcoin block \($0)" } ?? "A Bitcoin block"
+        guard let time = e.bitcoinTime else { return block }
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.calendar = Calendar(identifier: .gregorian)
+        f.timeZone = zone
+        f.dateFormat = "yyyy-MM-dd HH:mm"
+        return block + " · " + f.string(from: time)
+    }
+}
+
 /// What a job card shows, from successive `JobStatus` snapshots (port of Windows `Desktop/JobProgress.cs`;
 /// the logic of the app's former `JobItem.refresh` and `JobCard` texts, now testable).
 public final class JobProgress {

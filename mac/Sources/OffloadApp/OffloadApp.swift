@@ -20,10 +20,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// "Keep running" after closing the window: a click on the Dock icon brings the window back.
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool { true }
 
-    /// A running hardware measurement stops and deletes its temporary file before the process exits (≤ 10 s); a card
-    /// history record still waiting for the history lock gets 10 s more — never lost silently (logged).
+    /// A running hardware measurement stops and deletes its temporary file before the process exits (≤ 10 s); the proof
+    /// queue's run in flight gets ≤ 5 s, then it is cancelled (plan 11); a card history record still waiting for the
+    /// history lock gets 10 s more — never lost silently (logged).
     func applicationWillTerminate(_ notification: Notification) {
-        MainActor.assumeIsolated { model?.waitForHardware() }
+        MainActor.assumeIsolated {
+            model?.waitForHardware()
+            model?.stopProofs()
+        }
         if !HistoryRecorder.drain(timeout: 10) {
             NSLog("%@", "history: \(HistoryRecorder.waiting) record(s) not written before quitting — " + Msg.historyNotWritten)
         }

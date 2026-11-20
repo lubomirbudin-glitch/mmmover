@@ -68,6 +68,10 @@ struct JobCardState {
     /// The two verdicts of the card row (Windows R5), never merged; none while the job waits.
     var ejectChip: CardChip?
     var formatChip: CardChip?
+    /// Plan 11: the third chip beside them — where the proof of this offload is in the queue (JobProgress.proofChip); nil
+    /// while the proof is off or nothing was sealed. Its tooltip: what it waits for, the block, or why none was made.
+    var proofChip: CardChip?
+    var proofTooltip: String?
     var summary: [SummaryField] = []
     var thumbs: [ClipThumb] = []
     var moreThumbs = 0
@@ -134,6 +138,10 @@ struct JobCardState {
             let chips = JobProgress.chips(s, contentConfirmed: item.contentConfirmed, contentWarnings: s.contentWarnings)
             c.ejectChip = chips.eject
             c.formatChip = chips.format
+            // The entry as the proof service last saved it (AppModel+Proof), never read from the disk here.
+            let entry = model.proofEntry(s.proofId)
+            c.proofChip = JobProgress.proofChip(enabled: config.proof, error: s.proofError, entry: entry)
+            c.proofTooltip = JobProgress.proofTooltip(enabled: config.proof, error: s.proofError, entry: entry)
         }
         switch c.kind {
         case .waiting:

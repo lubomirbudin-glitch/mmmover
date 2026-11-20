@@ -239,6 +239,19 @@ struct VerifySettings: View {
                 .labelsHidden().pickerStyle(.segmented).fixedSize()
                 .disabled(!model.settings.verifyInProxy)
             }
+            // Plan 11: Offload Proof — the settings' proof.enabled; independent of verification (SHA-256 is computed while
+            // the card is read). A job already in the queue keeps its own; the queue finishes sealed proofs either way.
+            FormRow(label: "Offload Proof") {
+                VStack(alignment: .leading, spacing: 10) {
+                    Toggle(ProofMsg.switchLabel, isOn: $model.settings.proof.enabled)
+                        .toggleStyle(.offloadCheckbox)
+                    Text(ProofMsg.switchNote)
+                        .font(.ui(12)).foregroundStyle(p.text3).fixedSize(horizontal: false, vertical: true)
+                    // Final fix A1: a Mac without SHA instructions — how fast it hashes (measured off the main thread).
+                    if let note = model.proofSpeedNote { Notice(kind: .warn, text: note) }
+                }
+            }
+            .onAppear { model.measureProofRate() }
             FormRow(label: "Verify backup") {
                 VStack(alignment: .leading, spacing: 10) {
                     Text("Checks an earlier backup on a destination against its ASC MHL, without the card (⇧⌘O).")

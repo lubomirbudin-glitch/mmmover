@@ -1,8 +1,8 @@
 import Foundation
 
-/// Plan 11 (Offload Proof): why a job sealed no proof (`JobStatus.proofError`), the CLI's line after the job and the note
-/// on a Mac without SHA instructions — English, word for word as Windows `Messages.cs` (Offload Proof) and
-/// `SettingsTexts.ProofSlowCpuNote`.
+/// Plan 11 (Offload Proof): why a job sealed no proof (`JobStatus.proofError`), the CLI's line after the job, the settings'
+/// switch and the note on a Mac without SHA instructions — English, word for word as Windows `Messages.cs` (Offload Proof)
+/// and `SettingsTexts.ProofLabel` / `ProofNote` / `ProofSlowCpuNote`.
 public enum ProofMsg {
     public static let noFiles = "no file of this copy is good on every destination with its SHA-256 — there is nothing to anchor"
     public static let noCardFolder = "no card folder could be written (the destination disks are not connected)"
@@ -32,6 +32,11 @@ public enum ProofMsg {
             return notCreated(e.lastError ?? "the proof could not be finished")
         }
     }
+
+    /// Settings › Verify, the switch (`proof.enabled`) and the line under it (Windows `SettingsTexts.ProofLabel` /
+    /// `ProofNote`).
+    public static let switchLabel = "Offload Proof — anchor every offload in time"
+    public static let switchNote = "Only a fingerprint (hash) leaves this computer, never files or names. Free (OpenTimestamps, Bitcoin)."
 
     /// Final fix A1: under the switch (and once per CLI job with the proof on) on a Mac without SHA instructions — the
     /// measured SHA-256 rate, to 50 MB/s (half away from zero, at least 50), with a thousands separator.
