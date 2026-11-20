@@ -404,8 +404,10 @@ public sealed class ProofService : IDisposable
         return OtsFile.Parse(File.ReadAllBytes(path));
     }
 
-    /// `mmmover proof upgrade <card folder>`: every `.ots` in `<card>/_REPORT` that is not in Bitcoin yet is upgraded
-    /// in place — its pending calendars asked (AllowedCalendar, as the queue), a Bitcoin attestation they give checked
+    /// `mmmover proof upgrade <card folder>`: every `<manifest>.ots` in `<card>/_REPORT` that is not in Bitcoin yet and
+    /// whose manifest lies next to it with exactly the SHA-256 it was made for (any other `.ots` — another tool's, one of
+    /// an edited or missing manifest — is left as it is, nothing asked) is upgraded in place — its pending calendars
+    /// asked (AllowedCalendar, as the queue), a Bitcoin attestation they give checked
     /// against the block headers (a mismatch is never written, ruling R8; explorers unreachable = written, as the queue
     /// does), the file replaced only by the rule of PutOts (under DiskLockName). One line per file; null when the folder
     /// has no `_REPORT/*.ots`. Never touches the store. Only the caller's cancellation throws.
@@ -444,6 +446,13 @@ public sealed class ProofService : IDisposable
 
     async Task<string> UpgradeOne(string path, CancellationToken ct)
     {
+        // Only the timestamp of a proof manifest that lies next to it with exactly the SHA-256 it was made for (design:
+        // an .ots is written only where its manifest is) — never another tool's .ots, never one of an edited manifest.
+        var name = Path.GetFileName(path);
+        var manifestName = name[..^".ots".Length];
+        if (!ProofManifest.IsFileName(manifestName)) return "left as it is — not the timestamp of a proof manifest";
+        var manifest = Path.Combine(Path.GetDirectoryName(path)!, manifestName);
+        if (!File.Exists(manifest)) return $"left as it is — {manifestName} is not next to it";
         OtsFile ots;
         try
         {
@@ -453,8 +462,10 @@ public sealed class ProofService : IDisposable
         {
             return $"not a timestamp ({x.Message}) — left as it is";
         }
-        if (ots.IsComplete) return $"anchored already (Bitcoin block {EarliestBitcoin(ots)})";
         var digest = ots.Digest;
+        var notIts = $"left as it is — not the timestamp of {manifestName} (the SHA-256 of {manifestName} is not the one this .ots was made for)";
+        if (!Sha256Of(manifest).AsSpan().SequenceEqual(digest)) return notIts;
+        if (ots.IsComplete) return $"anchored already (Bitcoin block {EarliestBitcoin(ots)})";
         var pending = ots.Timestamp.All().Select(p => p.Attestation).OfType<PendingAttestation>().Select(p => p.Uri).Distinct().ToList();
         int asked = pending.Count(u => Allowed(u));
         if (asked == 0) return pending.Count == 0 ? "no calendar to ask — left as it is" : "none of its calendars is a public OpenTimestamps calendar — left as it is";
@@ -478,6 +489,8 @@ public sealed class ProofService : IDisposable
         using (var held = NamedLock.Acquire(DiskLockName, DiskLockTimeout))
         {
             if (held == null) return "another mmMover is writing proofs onto the disks — try again in a moment";
+            // Again under the lock, right before the write (the network took a while; as WriteToDisk does).
+            if (!File.Exists(manifest) || !Sha256Of(manifest).AsSpan().SequenceEqual(digest)) return notIts;
             PutOts(path, digest, ots, ots.ToBytes(), notes.Add);
         }
         // PutOts says what it did, except when the file holds all of it already (another mmMover was quicker).

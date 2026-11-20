@@ -187,6 +187,60 @@ public class CliProofTests
         Assert.Contains("Error: ", none.Err);
     }
 
+    // Fix round 1 (review): `proof upgrade <card folder>` touches only the timestamp of a proof manifest that lies next
+    // to it with exactly the SHA-256 the .ots was made for (design: an .ots is written only where its manifest is) — a
+    // foreign .ots (a user's own stamp of another file), one whose manifest was edited and one without its manifest are
+    // left as they are, and their calendars are not even asked. The calendar here would complete any of them.
+    [Fact]
+    public void Upgrade_Folder_LeavesForeignAndMismatchedOts()
+    {
+        using var card = new ProofVerifierTests.Card();
+        using var calendar = new LocalHttp(c =>
+            c.Request.Url!.AbsolutePath.StartsWith("/timestamp/", StringComparison.Ordinal)
+                ? Reply(c, 200, [0xf0, 0x04, .. DeadBeef, 0x08, 0x00, .. Convert.FromHexString("0588960d73d71901"), 0x03, 0x80, 0xea, 0x30])
+                : Reply(c, 404, "Not found"u8.ToArray()));
+        var uri = calendar.Url.TrimEnd('/');
+        var report = Path.Combine(card.Path, "_REPORT");
+
+        static byte[] PendingOf(byte[] digest, string uri)
+        {
+            var f = OtsFile.For(digest);
+            f.Timestamp.Add(OtsOp.Append([.. Enumerable.Range(0, 16).Select(i => (byte)i)])).Add(OtsOp.Sha256).Add(new PendingAttestation(uri));
+            return f.ToBytes();
+        }
+
+        // a user's own stamp of the clip list, and an .ots with a manifest's name but no manifest next to it
+        var foreign = Path.Combine(report, "A001_clips.csv.ots");
+        File.WriteAllBytes(foreign, PendingOf(SHA256.HashData("clip list"u8), uri));
+        var orphan = Path.Combine(report, "offload_proof_0002.json.ots");
+        File.WriteAllBytes(orphan, PendingOf(SHA256.HashData("generation 2"u8), uri));
+        // the proof's own .ots, but the manifest was edited after it was anchored
+        card.WritePendingOts(uri);
+        var manifest = File.ReadAllText(card.ManifestPath);
+        File.WriteAllText(card.ManifestPath, manifest.Replace("T21:30:00Z", "T21:30:01Z"));
+        var before = new[] { foreign, orphan, card.OtsPath }.ToDictionary(p => p, File.ReadAllBytes);
+        using var seams = new Seams(allowedPrefix: "http://127.0.0.1:");
+
+        var r = Run("upgrade", card.Path);
+
+        Assert.Equal(0, r.Exit);
+        Assert.Contains("A001_clips.csv.ots: left as it is — not the timestamp of a proof manifest", r.Out);
+        Assert.Contains("offload_proof_0002.json.ots: left as it is — offload_proof_0002.json is not next to it", r.Out);
+        Assert.Contains("offload_proof.json.ots: left as it is — not the timestamp of offload_proof.json", r.Out);
+        Assert.DoesNotContain("anchored", r.Out);
+        Assert.All(before, kv => Assert.Equal(kv.Value, File.ReadAllBytes(kv.Key)));
+        Assert.Empty(calendar.Requests);
+
+        // the manifest as it was anchored: now the proof's own .ots is upgraded, the other two still are not
+        File.WriteAllText(card.ManifestPath, manifest);
+        var again = Run("upgrade", card.Path);
+        Assert.Contains("offload_proof.json.ots: anchored in Bitcoin block 800000", again.Out);
+        Assert.True(OtsFile.Parse(File.ReadAllBytes(card.OtsPath)).IsComplete);
+        Assert.Equal(before[foreign], File.ReadAllBytes(foreign));
+        Assert.Equal(before[orphan], File.ReadAllBytes(orphan));
+        Assert.Single(calendar.Requests);
+    }
+
     // `proof upgrade` without a folder works the queue now (force) and prints each entry it worked.
     [Fact]
     public void Upgrade_Queue_WorksEveryEntryNow()
