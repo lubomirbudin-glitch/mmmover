@@ -38,6 +38,8 @@ public sealed partial class JobItemViewModel
     public CardChip? ProofChip => JobCard.ProofChip(Job.Config.Proof, progress.Status.ProofError, owner.ProofEntryOf(ProofId));
     public string? ProofTooltip => JobCard.ProofTooltip(Job.Config.Proof, progress.Status.ProofError, owner.ProofEntryOf(ProofId));
     internal string? ProofId => progress.Status.ProofId;
+    /// Final fix C5: MainViewModel watches the job's background queue retry (once).
+    internal bool ProofQueueingWatched { get; set; }
     /// The service saved this card's proof (a finished card is not refreshed every tick).
     internal void ProofChanged() => RaiseMany(nameof(ProofChip), nameof(ProofTooltip));
     /// "Checked — safe to format the card" is offered while content warnings wait for a look.

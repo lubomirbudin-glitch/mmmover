@@ -6,13 +6,19 @@ using Offload.Core.Desktop;
 namespace Offload.Core.Proof;
 
 /// The proof queue (spec „Fronta a stavy“): `<folder>\<id>.json` (indented UTF-8) and `<id>.ots` (the latest known
-/// timestamp), local to this PC. The GUI and the CLI may work it at once: every read and write holds the named mutex
+/// timestamp), local to this PC. The GUI and the CLI may work it at once: every write holds the named mutex
 /// Local\mmMover-proof-store (never across the network — ProofService asks the calendars outside it), and every file is
-/// replaced atomically. The mutex is re-entrant on its thread, so `Update`'s change may call ReadOts / WriteOts and the
-/// .ots and its entry change under one hold.
+/// replaced atomically, so a read never waits for it (final fix C4: it sees the old file or the new one, never half).
+/// The mutex is re-entrant on its thread, so `Update`'s change may call ReadOts / WriteOts and the .ots and its entry
+/// change under one hold.
 public sealed partial class ProofStore(string folder)
 {
-    public const string LockName = @"Local\mmMover-proof-store";
+    /// The store's mutex (and with it ProofService.DiskLockName) — `Local\mmMover-proof-store` + LockSuffix.
+    public static string LockName => @"Local\mmMover-proof-store" + LockSuffix;
+
+    /// Test seam (final fix C6): TestEnvironment gives the test process mutexes of its own, so a running mmMover never
+    /// blocks a test.
+    internal static string LockSuffix { get; set; } = "";
 
     /// %APPDATA%\mmMover\proof (or the folder of MMMOVER_SETTINGS_DIR). Tests set DefaultFolderOverride once (TestEnvironment).
     public static string DefaultFolder => DefaultFolderOverride ?? Path.Combine(AppData.Folder, "proof");
@@ -23,7 +29,7 @@ public sealed partial class ProofStore(string folder)
 
     public string Folder { get; } = folder;
 
-    /// How long a write waits for another process's hold; then it throws (a read reads anyway — files are replaced
+    /// How long a write waits for another process's hold; then it throws (a read never waits — files are replaced
     /// atomically, so it never sees half a file).
     internal TimeSpan LockTimeout { get; init; } = TimeSpan.FromSeconds(10);
 
@@ -67,7 +73,6 @@ public sealed partial class ProofStore(string folder)
     {
         try
         {
-            using var held = Hold();
             if (!Directory.Exists(Folder)) return [];
             var list = new List<ProofEntry>();
             foreach (var path in Directory.EnumerateFiles(Folder, "*.json"))
@@ -91,7 +96,6 @@ public sealed partial class ProofStore(string folder)
         if (!ValidId(id)) return null;
         try
         {
-            using var held = Hold();
             return Read(id);
         }
         catch (Exception)
@@ -124,7 +128,6 @@ public sealed partial class ProofStore(string folder)
         if (!ValidId(id)) return null;
         try
         {
-            using var held = Hold();
             var path = OtsPath(id);
             return File.Exists(path) ? ReadShared(path) : null;
         }
@@ -177,10 +180,8 @@ public sealed partial class ProofStore(string folder)
         return bytes;
     }
 
-    IDisposable? Hold() => NamedLock.Acquire(LockName, LockTimeout);
-
     IDisposable HoldForWrite() =>
-        Hold() ?? throw new IOException($"the proof store is busy (another mmMover held it for {LockTimeout.TotalSeconds:0} s)");
+        NamedLock.Acquire(LockName, LockTimeout) ?? throw new IOException($"the proof store is busy (another mmMover held it for {LockTimeout.TotalSeconds:0} s)");
 }
 
 /// A named mutex held on the calling thread (re-entrant there). Acquire never holds it across an await.

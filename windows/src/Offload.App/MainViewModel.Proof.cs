@@ -62,6 +62,15 @@ public sealed partial class MainViewModel
         });
     }
 
+    /// Final fix C5: the queue entry a finished job still retries in the background — its card is refreshed once that
+    /// ends (ProofId and the chip, or ProofError), as a finished card is not refreshed by the timer.
+    void WatchProofQueueing(JobItemViewModel item)
+    {
+        if (item.Job.ProofQueueing is not { } queueing || item.ProofQueueingWatched) return;
+        item.ProofQueueingWatched = true;
+        queueing.ContinueWith(_ => Dispatch(item.Refresh), TaskScheduler.Default);
+    }
+
     /// A freshly read entry counts only while the service has saved nothing newer of it (both arrive on the UI thread).
     void ProofEntryRead(ProofEntry e)
     {

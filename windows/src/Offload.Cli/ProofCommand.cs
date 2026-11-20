@@ -46,7 +46,7 @@ static class ProofCommand
 
     static Command UpgradeCommand()
     {
-        var folder = new Argument<string?>("folder") { Description = "A card folder: upgrade the .ots files in its _REPORT in place (without it: every proof in the queue, now).", Arity = ArgumentArity.ZeroOrOne };
+        var folder = new Argument<string?>("folder") { Description = "A card folder: upgrade the .ots files in its _REPORT in place, stamp a proof manifest that has none (without it: every proof in the queue, now).", Arity = ArgumentArity.ZeroOrOne };
         var cmd = new Command("upgrade",
             "Ask the calendars for the Bitcoin anchor now: every proof in the queue (stamp, upgrade, write onto the disks), or the .ots files of one card folder.");
         cmd.Arguments.Add(folder);
@@ -159,7 +159,7 @@ static class ProofCommand
             {
                 if (await service.UpgradeFolder(full, ct) is not { } lines)
                 {
-                    Console.Error.WriteLine(Msg.CliError + $"no timestamp (.ots) in {Path.Combine(full, Layout.ReportDirName)}.");
+                    Console.Error.WriteLine(Msg.CliError + $"no proof manifest or timestamp (.ots) in {Path.Combine(full, Layout.ReportDirName)}.");
                     return 1;
                 }
                 foreach (var line in lines) Console.WriteLine(line);

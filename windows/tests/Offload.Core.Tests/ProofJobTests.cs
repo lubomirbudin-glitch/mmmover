@@ -414,6 +414,80 @@ public class ProofJobTests
         Assert.Equal(Other, File.ReadAllText(ProofPath(p2)));   // never replaced
     }
 
+    // Final fix C5: the queue could not take the entry right after the manifests were written (a store that is busy or
+    // cannot be written) — retried in the background (1, 3, 10 s): the job never waits for it, the manifests are never
+    // orphaned once the store is back; the entry and ProofId come then, ProofSealed too.
+    [Fact]
+    public async Task QueueAddFails_RetriedInTheBackground_JobNeverWaits()
+    {
+        using var dir = new TempDir();
+        var card = dir.Sub("A001");
+        Card(card);
+        var blocked = Path.Combine(dir.Path, "proof");
+        File.WriteAllText(blocked, "a file where the queue's folder belongs");   // the store cannot be written
+        var log = new List<string>();
+        var raised = new List<string>();
+        var job = new OffloadJob(Config(card, [dir.Sub("d1"), dir.Sub("d2")], blocked), AppendFixtures.Options());
+        job.ProofSealed += id => { lock (raised) raised.Add(id); };
+
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        job.Run(line => { lock (log) log.Add(line); });
+
+        Assert.True(sw.Elapsed < TimeSpan.FromSeconds(30));
+        var s = job.Status();
+        Assert.Equal(JobPhase.Done, s.Phase);
+        Assert.True(s.SafeToFormat);
+        Assert.Null(s.ProofId);   // not yet: the first retry is a second away
+        Assert.Null(s.ProofError);
+        Assert.NotNull(job.ProofQueueing);
+        Assert.False(job.ProofQueueing!.IsCompleted);
+        lock (log) Assert.Contains(log, l => l.StartsWith("proof: the queue could not take offload_proof.json (", StringComparison.Ordinal) && l.EndsWith("— trying again in the background", StringComparison.Ordinal));
+        Assert.All(job.Plan!.CardPaths, p => Assert.True(File.Exists(ProofPath(p))));   // the manifests are written
+
+        File.Delete(blocked);   // the store is back
+        await job.ProofQueueing.WaitAsync(TimeSpan.FromSeconds(20));
+
+        var after = job.Status();
+        var store = new ProofStore(blocked);
+        var entry = Assert.Single(store.All());
+        Assert.Equal(entry.Id, after.ProofId);
+        Assert.Null(after.ProofError);
+        Assert.Equal(ProofState.Queued, entry.State);
+        Assert.Equal(job.Plan.CardPaths, entry.CardPaths);
+        Assert.Equal(entry.Digest, Sha(File.ReadAllBytes(ProofPath(job.Plan.CardPaths[0]))));
+        lock (raised) Assert.Equal([entry.Id], raised);
+        lock (log) Assert.Contains("proof: offload_proof.json sealed in 2 of 2 card folders — queued for anchoring", log);
+        Assert.Equal((JobPhase.Done, true), (after.Phase, after.SafeToFormat));   // the job as it was
+    }
+
+    // Final fix C5: every retry fails — ProofError then (the manifests stay; `mmmover proof upgrade <card folder>` stamps
+    // them), never a change of the job.
+    [Fact]
+    public async Task QueueAddFailsForGood_ProofErrorAfterTheRetries()
+    {
+        using var dir = new TempDir();
+        var card = dir.Sub("A001");
+        Card(card);
+        var blocked = Path.Combine(dir.Path, "proof");
+        File.WriteAllText(blocked, "a file where the queue's folder belongs");
+        var log = new List<string>();
+        var job = new OffloadJob(Config(card, [dir.Sub("d1")], blocked), AppendFixtures.Options())
+        {
+            ProofAddRetries = [TimeSpan.FromMilliseconds(10), TimeSpan.FromMilliseconds(10), TimeSpan.FromMilliseconds(10)],
+        };
+
+        job.Run(line => { lock (log) log.Add(line); });
+        await job.ProofQueueing!.WaitAsync(TimeSpan.FromSeconds(20));
+
+        var s = job.Status();
+        Assert.Equal((JobPhase.Done, true, (string?)null), (s.Phase, s.SafeToFormat, s.ProofId));
+        Assert.NotNull(s.ProofError);
+        Assert.Contains("the proof queue could not take it", s.ProofError);
+        Assert.Contains("mmmover proof upgrade", s.ProofError);
+        lock (log) Assert.Equal(4, log.Count(l => l.StartsWith("proof: the queue could not take", StringComparison.Ordinal)));   // the first try and 3 retries
+        Assert.True(File.Exists(ProofPath(job.Plan!.CardPaths[0])));
+    }
+
     [Fact]
     public void Append_SealsGeneration2()
     {

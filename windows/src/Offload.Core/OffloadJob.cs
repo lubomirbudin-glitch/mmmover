@@ -197,9 +197,19 @@ public sealed class OffloadJob
     /// Tests: called before the verified generation is committed into each card folder (a throw = that commit failed).
     internal Action<string>? BeforeCommit { get; init; }
 
-    /// Plan 11: a proof was sealed and queued (its entry id, also in Status().ProofId) — on the job's thread; the app's
-    /// proof service stamps it at once. A listener that throws never breaks the job.
+    /// Plan 11: a proof was sealed and queued (its entry id, also in Status().ProofId) — on the job's thread (or on the
+    /// background retry of the queue, final fix C5); the app's proof service stamps it at once. A listener that throws
+    /// never breaks the job.
     public event Action<string>? ProofSealed;
+
+    /// Final fix C5: the queue could not take the entry of a sealed proof (its manifests are written) — it is tried again
+    /// in the background after these delays, so the job never waits for it and the manifests are never orphaned once the
+    /// store is back. Status().ProofId (or, after the last try, ProofError) comes then.
+    internal IReadOnlyList<TimeSpan> ProofAddRetries { get; init; } = [TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(3), TimeSpan.FromSeconds(10)];
+
+    /// Final fix C5: the background retry of the queue entry (null when the first try took it, or nothing was sealed) —
+    /// the CLI waits for it (bounded) before it says where the proof is.
+    public Task? ProofQueueing { get; private set; }
 
     public OffloadJob(JobConfig config)
         : this(config, new OffloadOptions
@@ -1173,11 +1183,20 @@ public sealed class OffloadJob
                         State = ProofState.Queued,
                         LastError = failed.Count > 0 ? string.Join("; ", failed) : null,
                     };
-                    new ProofStore(Config.ProofFolder ?? ProofStore.DefaultFolder).Add(entry);
-                    Update(s => s with { ProofId = entry.Id, ProofError = null });
-                    log?.Invoke($"proof: {name} sealed in {holding} of {report.Destinations.Count} card folders — queued for anchoring");
-                    try { ProofSealed?.Invoke(entry.Id); }
-                    catch (Exception x) { log?.Invoke($"proof: a listener failed: {x.Message}"); }
+                    var store = new ProofStore(Config.ProofFolder ?? ProofStore.DefaultFolder);
+                    var sealedLine = $"proof: {name} sealed in {holding} of {report.Destinations.Count} card folders — queued for anchoring";
+                    try
+                    {
+                        store.Add(entry);
+                    }
+                    catch (Exception x) when (x is IOException or IOError or UnauthorizedAccessException)
+                    {
+                        // C5: the manifests are on the disks — the entry must follow, without the job waiting for it.
+                        log?.Invoke($"proof: the queue could not take {name} ({x.Message}) — trying again in the background");
+                        ProofQueueing = Task.Run(() => QueueLater(store, entry, name, sealedLine, log));
+                        return;
+                    }
+                    Queued(entry, sealedLine, log);
                     return;
                 }
             }
@@ -1188,6 +1207,54 @@ public sealed class OffloadJob
         }
         log?.Invoke($"proof not created: {why}");
         Update(s => s with { ProofError = why });
+    }
+
+    /// The entry is in the queue: Status().ProofId, the log line, ProofSealed.
+    void Queued(ProofEntry entry, string line, Action<string>? log)
+    {
+        Update(s => s with { ProofId = entry.Id, ProofError = null });
+        log?.Invoke(line);
+        try { ProofSealed?.Invoke(entry.Id); }
+        catch (Exception x) { log?.Invoke($"proof: a listener failed: {x.Message}"); }
+    }
+
+    /// Final fix C5: the entry the queue did not take, tried again after each of ProofAddRetries (in the background);
+    /// after the last one ProofError — the manifests stay, `mmmover proof upgrade <card folder>` stamps them. Never
+    /// changes anything else of the job; never throws.
+    async Task QueueLater(ProofStore store, ProofEntry entry, string name, string sealedLine, Action<string>? log)
+    {
+        string why = "";
+        try
+        {
+            for (int i = 0; i < ProofAddRetries.Count; i++)
+            {
+                await Task.Delay(ProofAddRetries[i]).ConfigureAwait(false);
+                try
+                {
+                    store.Add(entry);
+                    Queued(entry, sealedLine, log);
+                    return;
+                }
+                catch (Exception x) when (x is IOException or IOError or UnauthorizedAccessException)
+                {
+                    if (store.Get(entry.Id) != null)   // it got there after all (an earlier try wrote it, then failed)
+                    {
+                        Queued(entry, sealedLine, log);
+                        return;
+                    }
+                    why = x.Message;
+                    log?.Invoke($"proof: the queue could not take {name} ({why}) — try {i + 1} of {ProofAddRetries.Count}");
+                }
+            }
+        }
+        catch (Exception x)
+        {
+            why = x.Message;
+        }
+        var error = Msg.ProofQueueFailed(why);
+        try { log?.Invoke($"proof not created: {error}"); }
+        catch (Exception) { }
+        Update(s => s with { ProofError = error });
     }
 
     /// Every copy as the copy left it (nothing read): "written" stays unverified, "failed" stays failed.

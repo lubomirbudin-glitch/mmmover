@@ -160,6 +160,43 @@ public class ProofStoreTests
         Assert.Equal("keep me", (string?)after["note"]);
     }
 
+    // Final fix C4: reads never wait for the store's mutex (every file is replaced atomically) — only writes take it.
+    [Fact]
+    public void Reads_NeverWaitForTheMutex_WritesDo()
+    {
+        using var dir = new TempDir();
+        var store = new ProofStore(dir.Path) { LockTimeout = TimeSpan.FromSeconds(3) };
+        var e = Sample();
+        store.Add(e);
+        store.WriteOts(e.Id, [1, 2, 3]);
+        using var held = new ManualResetEventSlim();
+        using var release = new ManualResetEventSlim();
+        var holder = new Thread(() =>
+        {
+            using var m = new Mutex(false, ProofStore.LockName);
+            m.WaitOne();
+            held.Set();
+            release.Wait();
+            m.ReleaseMutex();
+        });
+        holder.Start();
+        held.Wait();
+        try
+        {
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            Assert.Equal(e.Id, Assert.Single(store.All()).Id);
+            Assert.Equal(e.Id, store.Get(e.Id)!.Id);
+            Assert.Equal([1, 2, 3], store.ReadOts(e.Id));
+            Assert.True(sw.Elapsed < TimeSpan.FromSeconds(1), sw.Elapsed.ToString());
+            Assert.Throws<IOException>(() => store.Update(e.Id, x => x));   // a write waits, then says busy
+        }
+        finally
+        {
+            release.Set();
+            holder.Join();
+        }
+    }
+
     // Final fix A2: the contradicted heights are one optional key — sorted, once each, kept on every rewrite, absent
     // while there are none.
     [Fact]

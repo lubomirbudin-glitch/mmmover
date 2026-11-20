@@ -294,6 +294,9 @@ public static partial class Msg
     public const string ProofNoFiles = "no file of this copy is good on every destination with its SHA-256 — there is nothing to anchor";
     public const string ProofNoCardFolder = "no card folder could be written (the destination disks are not connected)";
     public static string ProofNotCreated(string why) => $"Proof: not created — {why}";
+    /// Final fix C5: the queue never took a sealed proof (its manifests are on the disks).
+    public static string ProofQueueFailed(string why) =>
+        $"the proof queue could not take it ({why.TrimEnd('.')}) — the manifest is in _REPORT; mmmover proof upgrade <card folder> stamps it";
 
     /// Where the queue entry is right after the job's one stamp attempt; `calendars`: how many accepted the stamp
     /// (0 = not known).

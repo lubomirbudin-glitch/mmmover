@@ -36,7 +36,7 @@ public sealed class ProofService : IDisposable
 {
     /// Held while the .ots files on the disks are compared and written (and their `written` saved), so two services
     /// never interleave there: the later one sees what the earlier wrote.
-    public const string DiskLockName = @"Local\mmMover-proof-disks";
+    public static string DiskLockName => @"Local\mmMover-proof-disks" + ProofStore.LockSuffix;
 
     static readonly TimeSpan DiskLockTimeout = TimeSpan.FromSeconds(30);
     static readonly int[] StampDelaysMinutes = [1, 2, 5, 10, 30, 60];
@@ -507,32 +507,38 @@ public sealed class ProofService : IDisposable
     /// against the block headers (a mismatch is never written, ruling R8; explorers unreachable = written, as the queue
     /// does), the file replaced only by the rule of PutOts (under DiskLockName). "In Bitcoin" = a Bitcoin attestation
     /// the explorers verify, or one they do not contradict while they cannot check it (final fix A2): one whose every
-    /// Bitcoin attestation is contradicted is upgraded like a pending one. One line per file; null when the folder has
-    /// no `_REPORT/*.ots`. Never touches the store. Only the caller's cancellation throws.
+    /// Bitcoin attestation is contradicted is upgraded like a pending one. A proof manifest without its `.ots` (its
+    /// queue entry was never made, or got lost — final fix C5) is stamped: only the nonce'd commitment leaves, the
+    /// `.ots` is a new file. One line per file; null when the folder has neither. Never touches the store. Only the
+    /// caller's cancellation throws.
     public async Task<IReadOnlyList<string>?> UpgradeFolder(string cardFolder, CancellationToken ct)
     {
         var report = Path.Combine(cardFolder, Layout.ReportDirName);
-        string[] files;
+        List<(string Ots, string? Lone)> files;
         try
         {
-            files = Directory.Exists(report)
-                ? [.. Directory.EnumerateFiles(report, "*.ots").Where(p => p.EndsWith(".ots", StringComparison.OrdinalIgnoreCase)).Order(StringComparer.Ordinal)]
-                : [];
+            files = !Directory.Exists(report) ? [] :
+            [
+                .. Directory.EnumerateFiles(report, "*.ots").Where(p => p.EndsWith(".ots", StringComparison.OrdinalIgnoreCase)).Select(p => (p, (string?)null)),
+                .. Directory.EnumerateFiles(report, "offload_proof*.json")
+                    .Where(p => ProofManifest.IsFileName(Path.GetFileName(p)) && !File.Exists(p + ".ots")).Select(p => (p + ".ots", (string?)p)),
+            ];
+            files.Sort((a, b) => string.CompareOrdinal(a.Ots, b.Ots));
         }
         catch (Exception x) when (x is IOException or UnauthorizedAccessException)
         {
             return [$"{report}: {x.Message}"];
         }
-        if (files.Length == 0) return null;
+        if (files.Count == 0) return null;
 
         var lines = new List<string>();
-        foreach (var path in files)
+        foreach (var (path, lone) in files)
         {
             ct.ThrowIfCancellationRequested();
             var name = Path.GetFileName(path);
             try
             {
-                lines.Add($"{name}: {await UpgradeOne(path, ct).ConfigureAwait(false)}");
+                lines.Add($"{name}: {await (lone != null ? StampOne(lone, ct) : UpgradeOne(path, ct)).ConfigureAwait(false)}");
             }
             catch (Exception x) when (x is IOException or IOError or UnauthorizedAccessException)
             {
@@ -540,6 +546,28 @@ public sealed class ProofService : IDisposable
             }
         }
         return lines;
+    }
+
+    /// C5: a proof manifest without its .ots — stamped at the calendars (as the queue stamps), `<manifest>.ots` written
+    /// as a new file under DiskLockName (the manifest's SHA-256 checked again right before).
+    async Task<string> StampOne(string manifest, CancellationToken ct)
+    {
+        var digest = Sha256Of(manifest);
+        var r = await OtsCalendar.Stamp(http, digest, options.Calendars, options.Minimum, options.Timeout, ct).ConfigureAwait(false);
+        if (r.File is not { } stamped)
+            return $"stamp failed at {r.Failed.Count} of {options.Calendars.Count} calendars ({r.Accepted.Count} accepted, {Math.Max(1, options.Minimum)} needed)"
+                + (r.Reasons.Count > 0 ? ": " + string.Join("; ", r.Reasons) : "") + " — try again later";
+        var wrote = new List<string>();
+        using (var held = NamedLock.Acquire(DiskLockName, DiskLockTimeout))
+        {
+            if (held == null) return "another mmMover is writing proofs onto the disks — try again in a moment";
+            if (!File.Exists(manifest) || !Sha256Of(manifest).AsSpan().SequenceEqual(digest))
+                return $"left as it is — {Path.GetFileName(manifest)} changed while it was stamped";
+            // A new file — or, when another mmMover wrote one meanwhile, the rule of PutOts.
+            PutOts(manifest + ".ots", digest, stamped, stamped.ToBytes(), wrote.Add);
+        }
+        return $"anchoring requested at {r.Accepted.Count} of {options.Calendars.Count} calendars — Bitcoin confirms in a few hours"
+            + (wrote.Count > 0 ? " — " + string.Join("; ", wrote) : "");
     }
 
     async Task<string> UpgradeOne(string path, CancellationToken ct)

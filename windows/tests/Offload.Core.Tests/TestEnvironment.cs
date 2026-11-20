@@ -48,6 +48,8 @@ static class TestEnvironment
         // tests were written for) and hashes 1 000 MB/s — a test that wants a slow CPU says so (ProofHardware.Force).
         ProofHardware.ShaOverride = true;
         ProofHardware.RateOverride = 1000;
+        // Final fix C6: the proof's named mutexes of this test process only (a running mmMover never blocks a test).
+        ProofStore.LockSuffix = "-test-" + Environment.ProcessId;
     }
 #pragma warning restore CA2255
 }
@@ -81,5 +83,48 @@ public class TestEnvironmentTests
         Assert.Equal(TimeSpan.FromSeconds(10), new ProofVerifyOptions().Timeout);
         Assert.True(ProofHardware.HasShaInstructions);
         Assert.Equal(1000, ProofHardware.MeasureSha256MBps());
+    }
+
+    // Final fix C6: the proof's named mutexes carry a suffix of this test process — a running mmMover (holding the
+    // real names) never blocks a test.
+    [Fact]
+    public void ProofMutexes_OwnNamesPerTestProcess()
+    {
+        var suffix = "-test-" + Environment.ProcessId;
+        Assert.Equal(@"Local\mmMover-proof-store" + suffix, ProofStore.LockName);
+        Assert.Equal(@"Local\mmMover-proof-disks" + suffix, ProofService.DiskLockName);
+
+        using var dir = new TempDir();
+        var store = new ProofStore(dir.Path) { LockTimeout = TimeSpan.FromMilliseconds(500) };
+        using var held = new ManualResetEventSlim();
+        using var release = new ManualResetEventSlim();
+        var app = new Thread(() =>
+        {
+            // as a running mmMover would (if one runs here, it holds them already — the same case)
+            using Mutex s = new(false, @"Local\mmMover-proof-store"), d = new(false, @"Local\mmMover-proof-disks");
+            bool hs = Take(s), hd = Take(d);
+            held.Set();
+            release.Wait();
+            if (hd) d.ReleaseMutex();
+            if (hs) s.ReleaseMutex();
+        });
+        app.Start();
+        held.Wait();
+        try
+        {
+            store.Add(ProofStoreTests.Sample());   // the real store's name is held: this one is not
+            Assert.Single(store.All());
+        }
+        finally
+        {
+            release.Set();
+            app.Join();
+        }
+
+        static bool Take(Mutex m)
+        {
+            try { return m.WaitOne(TimeSpan.FromSeconds(2)); }
+            catch (AbandonedMutexException) { return true; }
+        }
     }
 }

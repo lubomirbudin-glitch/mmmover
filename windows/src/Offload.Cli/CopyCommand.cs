@@ -192,7 +192,9 @@ static class CopyCommand
         if (status.Warning != null) Console.WriteLine("Warning: " + status.Warning);
         if (status.Error != null) Console.WriteLine(Msg.CliError + status.Error);
         Ntfy(config, plan, status, report);
-        AnchorProof(config, status);   // plan 11: last — its stamp (up to ProofWait) never delays the outcome or the push
+        // Final fix C5: a queue entry still being retried in the background — waited for here, after the outcome.
+        if (job.ProofQueueing is { } queueing) queueing.Wait(TimeSpan.FromSeconds(30));
+        AnchorProof(config, job.Status());   // plan 11: last — its stamp (up to ProofWait) never delays the outcome or the push
         return ExitCode(config, status, report);
     }
 

@@ -755,6 +755,45 @@ public class ProofServiceTests
     }
 
 
+    // Final fix C5: `proof upgrade <card folder>` stamps a proof manifest that has no .ots yet (its queue entry was never
+    // made, or got lost) — the same guard (only a proof manifest's name), a new file only, only the nonce'd commitment
+    // leaves; a file without a proof manifest's name is not stamped.
+    [Fact]
+    public async Task UpgradeFolder_StampsAManifestWithoutOts()
+    {
+        using var rig = new Rig();
+        var manifest = Manifest();
+        var c1 = rig.Card("d1", manifest);
+        File.WriteAllBytes(Path.Combine(c1, "_REPORT", "offload_proof_backup.json"), manifest);   // not a proof manifest's name
+        using var service = rig.Service();
+
+        var line = Assert.Single((await service.UpgradeFolder(c1, default))!);
+
+        Assert.StartsWith("offload_proof.json.ots: anchoring requested at 2 of 2 calendars — Bitcoin confirms in a few hours", line);
+        var ots = DiskOts(c1);
+        Assert.Equal(SHA256.HashData(manifest), ots.Digest);
+        Assert.False(ots.IsComplete);
+        Assert.Equal(2, ots.Timestamp.All().Count(p => p.Attestation is PendingAttestation));
+        var (append, _) = Assert.Single(ots.Timestamp.Ops);
+        Assert.Equal((byte)0xf0, append.Tag);   // digest → append(nonce) → sha256: never the digest itself
+        Assert.Equal(16, append.Argument!.Length);
+        Assert.All(rig.Calendars, c => Assert.Equal(1, c.Stamps));
+        Assert.False(File.Exists(Path.Combine(c1, "_REPORT", "offload_proof_backup.json.ots")));
+        Assert.Empty(rig.Store.All());   // the store is not touched
+
+        // again: now it has its .ots — upgraded as any other, never stamped twice
+        var again = Assert.Single((await service.UpgradeFolder(c1, default))!);
+        Assert.StartsWith("offload_proof.json.ots: not in Bitcoin yet", again);
+        Assert.All(rig.Calendars, c => Assert.Equal(1, c.Stamps));
+
+        // the calendars refuse: a line, no file
+        var c2 = rig.Card("d2", manifest);
+        rig.A.Refuse = rig.B.Refuse = true;
+        var refused = Assert.Single((await service.UpgradeFolder(c2, default))!);
+        Assert.StartsWith("offload_proof.json.ots: stamp failed at 2 of 2 calendars", refused);
+        Assert.False(File.Exists(OtsPath(c2)));
+    }
+
     [Fact]
     public async Task Force_And_Only()
     {
