@@ -38,6 +38,11 @@ public sealed class OtsFile
         return Pairs(other).IsSubsetOf(mine);
     }
 
+    /// A copy without the Bitcoin attestations at these heights (and the branches only they ended); null when nothing
+    /// is left (final fix A2: a contradicted attestation never goes onto a disk).
+    public OtsFile? WithoutBitcoin(IReadOnlyCollection<ulong> heights) =>
+        Timestamp.Without(a => a is BitcoinAttestation b && heights.Contains(b.Height)) is { } t ? new OtsFile(t) : null;
+
     internal static HashSet<(string Message, OtsAttestation Attestation)> Pairs(OtsFile f) =>
         [.. f.Timestamp.All().Select(p => (Convert.ToHexStringLower(p.Message), p.Attestation))];
 

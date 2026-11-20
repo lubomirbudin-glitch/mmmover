@@ -211,6 +211,18 @@ public sealed class OtsTimestamp
 
     internal bool IsEmpty => attestations.Count == 0 && ops.Count == 0;
 
+    /// A copy of this tree without the attestations `drop` picks and without the branches left with nothing; null when
+    /// nothing is left.
+    internal OtsTimestamp? Without(Func<OtsAttestation, bool> drop)
+    {
+        var t = new OtsTimestamp(message);
+        foreach (var a in attestations)
+            if (!drop(a)) t.attestations.Add(a);
+        foreach (var (op, next) in ops)
+            if (next.Without(drop) is { } kept) t.ops[op] = kept;
+        return t.IsEmpty ? null : t;
+    }
+
     static int CompareAttestations(OtsAttestation a, OtsAttestation b)
     {
         int c = a.TagBytes.AsSpan().SequenceCompareTo(b.TagBytes);

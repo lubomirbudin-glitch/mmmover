@@ -360,8 +360,9 @@ public class JobCardTests
         Assert.Equal(new CardChip("Proof: anchored", ChipTone.Ok), JobCard.ProofChip(true, null, e));
         Assert.Equal("Bitcoin block 912345 · 2026-11-20 00:41 — the files existed unchanged no later than this.", JobCard.ProofTooltip(true, null, e, plusOne));
         Assert.Contains("Bitcoin block 912345 · ", JobCard.ProofTooltip(true, null, e));   // the PC's own time zone
-        e.BitcoinTime = null;   // the explorers did not answer (the proof is complete anyway): the block alone
-        Assert.Equal("Bitcoin block 912345 — the files existed unchanged no later than this.", JobCard.ProofTooltip(true, null, e, plusOne));
+        // The explorers did not answer (the proof is complete anyway): never as if the block were checked (final fix C3).
+        e.BitcoinTime = null;
+        Assert.Equal("Bitcoin block 912345 (block time not checked yet) — mmMover checks it again later.", JobCard.ProofTooltip(true, null, e, plusOne));
     }
 
     [Fact]

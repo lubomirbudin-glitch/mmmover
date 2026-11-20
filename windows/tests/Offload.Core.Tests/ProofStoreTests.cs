@@ -160,6 +160,28 @@ public class ProofStoreTests
         Assert.Equal("keep me", (string?)after["note"]);
     }
 
+    // Final fix A2: the contradicted heights are one optional key — sorted, once each, kept on every rewrite, absent
+    // while there are none.
+    [Fact]
+    public void Contradicted_KeptOnRewrite_AbsentWhenNone()
+    {
+        using var dir = new TempDir();
+        var store = new ProofStore(dir.Path);
+        var e = Sample();
+        store.Add(e);
+        var path = Path.Combine(dir.Path, e.Id + ".json");
+        Assert.False(JsonNode.Parse(File.ReadAllText(path))!.AsObject().ContainsKey("contradicted"));
+
+        store.Update(e.Id, x => { x.Contradicted = [800_005, 800_001, 800_005]; return x; });
+        store.Update(e.Id, x => { x.LastError = "another change"; return x; });
+
+        Assert.Equal([800_001UL, 800_005UL], store.Get(e.Id)!.Contradicted!);
+        Assert.Equal(2, JsonNode.Parse(File.ReadAllText(path))!["contradicted"]!.AsArray().Count);
+        store.Update(e.Id, x => { x.Contradicted = []; return x; });
+        Assert.Null(store.Get(e.Id)!.Contradicted);
+        Assert.False(JsonNode.Parse(File.ReadAllText(path))!.AsObject().ContainsKey("contradicted"));
+    }
+
     [Fact]
     public void NextUpgrade_HourlyTheFirstDay_ThenDaily()
     {

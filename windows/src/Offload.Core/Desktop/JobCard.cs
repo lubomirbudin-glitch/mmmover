@@ -316,6 +316,9 @@ public static class JobCard
         {
             ProofState.Pending => "Bitcoin confirms the anchor in a few hours. mmMover finishes it in the background — keep it running or open it later.",
             ProofState.Complete when ProofDisks(entry) is var (on, of) && on < of => "Connect the other disks — mmMover writes the finished proof onto them.",
+            // Final fix C3: a block the explorers could not check yet is never shown as checked (the queue checks it again).
+            ProofState.Complete when entry.BitcoinTime == null && entry.BitcoinHeight is { } h =>
+                $"Bitcoin block {h.ToString(Inv)} (block time not checked yet) — mmMover checks it again later.",
             ProofState.Complete => $"{AnchorText(entry, zone ?? TimeZoneInfo.Local)} — the files existed unchanged no later than this.",
             ProofState.Failed => entry.LastError ?? "the proof could not be finished",
             _ => null,

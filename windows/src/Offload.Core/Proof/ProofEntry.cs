@@ -54,6 +54,10 @@ public sealed class ProofEntry
     /// One per card path, WrittenNone / WrittenPending / WrittenComplete.
     [JsonPropertyName("written")] public List<string> Written { get; set; } = [];
 
+    /// Bitcoin heights the block explorers contradicted (a calendar's attestation that is not the block's merkle root,
+    /// final fix A2): never this proof's anchor, never written onto the disks. Null = none (kept on every rewrite).
+    [JsonPropertyName("contradicted"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public List<ulong>? Contradicted { get; set; }
+
     [JsonExtensionData] public Dictionary<string, JsonElement>? Extra { get; set; }
 
     /// `"bitcoin": {"height": N, "time": "…"}` in the file (the spec's shape), BitcoinHeight / BitcoinTime in code.
@@ -87,5 +91,6 @@ public sealed class ProofEntry
         VolumeSerials ??= [];
         var written = Written ?? [];
         Written = [.. CardPaths.Select((_, i) => i < written.Count && written[i] is WrittenPending or WrittenComplete ? written[i] : WrittenNone)];
+        Contradicted = Contradicted is { Count: > 0 } c ? [.. c.Distinct().Order()] : null;
     }
 }

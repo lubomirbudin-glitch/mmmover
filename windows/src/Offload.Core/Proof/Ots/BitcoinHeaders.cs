@@ -69,7 +69,12 @@ public sealed record HeaderLookup(BlockHeader? Header, IReadOnlyList<string> Agr
 public enum BitcoinOutcome { Verified, Mismatch, NotChecked, NoAttestation }
 
 /// `Time` = the block's time when Verified; `Sources` = the sources whose header was used; `Problem` = why not Verified.
-public sealed record BitcoinCheck(BitcoinOutcome Outcome, ulong? Height, DateTime? Time, IReadOnlyList<string> Sources, string? Problem);
+/// `Contradicted` = the heights whose header the sources gave and whose merkle root none of the file's attestations at
+/// that height has (final fix A2: such an attestation never anchors a proof), lowest first.
+public sealed record BitcoinCheck(BitcoinOutcome Outcome, ulong? Height, DateTime? Time, IReadOnlyList<string> Sources, string? Problem)
+{
+    public IReadOnlyList<ulong> Contradicted { get; init; } = [];
+}
 
 /// Block headers from public explorers (Esplora API), checked against each other — no Bitcoin node needed. A source
 /// counts only when the header it gives hashes to the block hash it gave for the height and carries its proof of work
@@ -147,11 +152,17 @@ public static class BitcoinHeaders
                     : $"no block header source answered for block {height}" + (look.Reasons.Count > 0 ? $" ({string.Join("; ", look.Reasons)})" : ""));
                 continue;
             }
-            if (message.AsSpan().SequenceEqual(look.Header.MerkleRoot)) return new(BitcoinOutcome.Verified, height, look.Header.Time, look.Agreed, null);
+            if (message.AsSpan().SequenceEqual(look.Header.MerkleRoot))
+                return new(BitcoinOutcome.Verified, height, look.Header.Time, look.Agreed, null) { Contradicted = Contradicted(lookups, except: height) };
             mismatch ??= new(BitcoinOutcome.Mismatch, height, null, look.Agreed, $"the merkle root of block {height} does not match the proof");
         }
-        return mismatch ?? notChecked!;
+        return (mismatch ?? notChecked!) with { Contradicted = Contradicted(lookups, except: null) };
     }
+
+    /// Every height looked up whose header the sources gave (claims run lowest first and stop at the first match, so
+    /// none of the file's attestations at such a height matched) — but `except`, the verified one.
+    static List<ulong> Contradicted(Dictionary<ulong, HeaderLookup> lookups, ulong? except) =>
+        [.. lookups.Where(kv => kv.Value.Header != null && kv.Key != except).Select(kv => kv.Key).Order()];
 
     static async Task<BlockHeader> FromSource(HttpClient http, string source, ulong height, CancellationToken ct)
     {
