@@ -407,7 +407,11 @@ enum JobRun {
     /// before. The status line is cleared first.
     static func proofLog(_ line: String) {
         guard line.hasPrefix("proof") else { return }
-        fputs("\r\u{1B}[K" + line + "\n", stderr)
+        if isatty(STDERR_FILENO) != 0 {
+            fputs("\r\u{1B}[K" + line + "\n", stderr)
+        } else {
+            fputs(line + "\n", stderr)
+        }
     }
 }
 

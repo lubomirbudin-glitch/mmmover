@@ -1251,4 +1251,49 @@ final class ProofServiceTests: XCTestCase {
         XCTAssertFalse(tree === ots, "a copy, never the object it was given")
         XCTAssertEqual(try tree.toBytes(), try ots.toBytes())
     }
+
+    /// Final fix 6: a real sealed card on two disks goes through the queue to a complete `.ots` and the verifier gives OK
+    /// on each disk's card folder and on one clip, at the block the stub explorers know.
+    func testCompleteDiskOtsVerifiesOkWithTheVerifier() async throws {
+        let height = ProofServiceTests.height
+        let height2 = ProofServiceTests.height2
+        let rig = ProofRig(self, heightB: height2)
+        let c1 = rig.dir.sub("d1", "2026-11-19", "A001")
+        let c2 = rig.dir.sub("d2", "2026-11-19", "A001")
+        var entries: [OffloadReport.FileEntry] = []
+        for rel in ["CLIP/A.mov", "CLIP/B.mov"] {
+            let size = rel == "CLIP/A.mov" ? 3 * 64 * 1024 + 5 : 700
+            let seed: UInt64 = rel == "CLIP/A.mov" ? 11 : 12
+            _ = TestFS.writeRandom(c1 + "/" + rel, size: size, seed: seed)
+            let data = TestFS.writeRandom(c2 + "/" + rel, size: size, seed: seed)
+            entries.append(ProofManifestTests.entry(rel, Int64(data.count), ProofVerifierTests.sha(data), destinations: 2))
+        }
+        let report = ProofManifestTests.report(cards: [c1, c2], entries)
+        let seal = try XCTUnwrap(ProofSeal.seal(report: report, now: ProofServiceTests.t0, machine: "PC"))
+        XCTAssertEqual(seal.written.count, 2)
+        try rig.add(seal.bytes, [c1, c2])
+        let calendarB = rig.b
+        let zeros = [UInt8](repeating: 0, count: 32)
+        let wrong: () -> [UInt8] = { OtsTest.sha256(OtsTest.utf8("another block")) }
+        let right: () -> [UInt8] = { calendarB.firstAttested ?? zeros }
+        let sources = rig.sources([height: wrong, height2: right])
+        let service = rig.service(sources)
+
+        let first = await service.runDue()
+        XCTAssertEqual(try single(first).state, .pending)
+        rig.confirm()
+        rig.clock.now = ProofServiceTests.t0 + ProofServiceTests.hour
+        let second = await service.runDue()
+        XCTAssertEqual(try single(second).state, .complete)
+
+        let options = ProofVerifierTests.options(sources)
+        for card in [c1, c2] {
+            let v = try await ProofVerifier.verifyFolder(card, options: options)
+            XCTAssertEqual(v.outcome, .ok, v.lines.joined(separator: "\n"))
+            XCTAssertEqual(v.block, height2)
+        }
+        let clip = try await ProofVerifier.verifyFile(c2 + "/CLIP/A.mov", options: options)
+        XCTAssertEqual(clip.outcome, .ok, clip.lines.joined(separator: "\n"))
+        XCTAssertEqual(clip.block, height2)
+    }
 }

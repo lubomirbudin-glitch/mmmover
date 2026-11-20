@@ -735,20 +735,20 @@ final class AppModel: ObservableObject {
                 return
             }
             item.recordCopiedCard()
-            let needsPost = item.job.runCopy()
+            let needsPost = item.job.runCopy(log: { NSLog("%@", $0) })
             DispatchQueue.main.async {
                 item.refresh()
                 self?.copyFinished(item)
             }
             if needsPost && oneAtATime {
-                item.job.runPost()
+                item.job.runPost(log: { NSLog("%@", $0) })
                 DispatchQueue.main.async {
                     self?.jobFinished(item)
                     self?.writeDayReports(item)
                 }
             } else if needsPost {
                 self?.postQueue.async {
-                    item.job.runPost()
+                    item.job.runPost(log: { NSLog("%@", $0) })
                     DispatchQueue.main.async {
                         self?.jobFinished(item)
                         self?.writeDayReports(item)

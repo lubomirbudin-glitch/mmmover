@@ -337,6 +337,13 @@ zadání: [OFFLOAD-PROOF.md](OFFLOAD-PROOF.md). Nezávislý ověřovač bez .NET
 - Chyba důkazu nikdy neshodí ani nezdrží offload: je to řádek v logu a červený chip; „Safe to eject“ / „Safe to format“
   se kvůli ní nemění.
 
+- **Známé omezení (název se `:` nebo `\`):** takový soubor nemůže přijít z karty kamery ani z Windows. Na Macu může ze
+  zdroje-složky na APFS/HFS+: název z Finderu s „/“ se uloží jako „:“ a `\` je platný znak. Při ověření složky
+  (`mmmover proof verify <složka karty>` i `verify_proof.py`) se takový název ohlásí jako
+  `Missing … (not a path inside the card folder)` a výsledek je FAILED, nikdy falešné OK; ověření toho jednoho souboru
+  samotného dá OK.
+- **Známé omezení (CLI bez SHA v CPU):** příkazová řádka Macu nezakládá důkaz na CPU bez instrukcí SHA, protože nemá
+  projekty ani přepínač `--proof` (jako Windows bez `--project`); zapnout ho umí přepínač v aplikaci.
 ### Manifest `offload_proof.json` (verze 1)
 
 UTF-8 bez BOM, bez koncového řádku, **přesně** kanonická serializace RFC 8785 (klíče seřazené podle UTF-16 jednotek, bez

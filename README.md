@@ -102,8 +102,8 @@ card goes into the reader until it is safe to format it.
   - Windows only: projects and presets, notifications in Windows and on the phone (ntfy).
 
 Both versions also have a **command line** (`mmmover`) for scripts: `copy`, `append`, `verify`, `day-report`,
-`summary-report`, `bench`, `ports`, `luts`, and on Windows `proof`. What exactly each version can do is in
-[docs/ROZDILY.md](docs/ROZDILY.md) (Czech).
+`summary-report`, `bench`, `ports`, `luts`, and `proof` (`verify | status | upgrade` on the Mac from 0.8.0; on Windows `proof` too).
+What exactly each version can do is in [docs/ROZDILY.md](docs/ROZDILY.md) (Czech).
 
 ## Offload Proof — time-anchored proof
 

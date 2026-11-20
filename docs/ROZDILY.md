@@ -117,6 +117,12 @@ a [VYVOJ-WINDOWS.md](VYVOJ-WINDOWS.md).
   vstupně-výstupních chyb jsou anglický `strerror` (Windows text chyby systému); (3) osamělý surrogát UTF-16 ve známém
   poli manifestu je na Macu `FAILED`, Windows ho čte uprostřed řetězce a jde dál; (4) `mmmover proof status <id>` a
   `mmmover proof upgrade <id>` existují jen na Macu.
+- **Offload Proof — známá omezení Macu (0.8.0):** (a) název souboru se `:` nebo `\` nemůže přijít z karty kamery ani
+  z Windows, na Macu ze zdroje-složky na APFS/HFS+ ano (název z Finderu s „/“ se uloží jako „:“, `\` je platný znak);
+  při ověření složky (`mmmover proof verify <složka karty>`, `verify_proof.py`) je takový název
+  `Missing … (not a path inside the card folder)` a výsledek FAILED, nikdy falešné OK; ověření toho jednoho souboru dá OK.
+  (b) CLI Macu nezakládá důkaz na CPU bez instrukcí SHA — nemá projekty ani `--proof` (jako Windows bez `--project`);
+  zapnout ho umí přepínač v aplikaci.
 - **Kontroly před kopií navíc na Windows:** názvy lišící se jen velikostí písmen (NTFS/exFAT je nerozliší),
   názvy, které Windows nepovolí (`<>:"|?*`, `CON`, `NUL`…), soubor ≥ 4 GB na cíl s FAT32.
 - **Svazky bez přímého zápisu** (některé síťové): Windows přejde na zápis přes cache a report to u cíle uvede
