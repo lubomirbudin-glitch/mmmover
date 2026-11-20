@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<hashlist version="2.0" xmlns="urn:ASC:MHL:v2.0">
+  <creatorinfo>
+    <creationdate>2026-11-20T06:24:47+01:00</creationdate>
+    <hostname>DESKTOP-IG6L214</hostname>
+    <tool version="0.12.0-win">mmMover</tool>
+    <comment>mmMover offload of A001 from C:\Users\PC\mmmover-smoke-src · verification: read-back</comment>
+  </creatorinfo>
+  <processinfo>
+    <process>transfer</process>
+    <ignore>
+      <pattern>.DS_Store</pattern>
+      <pattern>ascmhl</pattern>
+      <pattern>ascmhl/</pattern>
+      <pattern>_REPORT</pattern>
+      <pattern>_PROXY</pattern>
+    </ignore>
+  </processinfo>
+  <hashes>
+    <hash>
+      <path size="300000" lastmodificationdate="2026-11-20T06:24:45+01:00">CLIP/A001C000.bin</path>
+      <xxh64 action="original" hashdate="2026-11-20T06:24:47+01:00">9899bbdc2444b04b</xxh64>
+      <xxh128 action="original" hashdate="2026-11-20T06:24:47+01:00">c0415473b14210e31cd89e6ffaa98aa4</xxh128>
+    </hash>
+    <hash>
+      <path size="301000" lastmodificationdate="2026-11-20T06:24:45+01:00">CLIP/A001C001.bin</path>
+      <xxh64 action="original" hashdate="2026-11-20T06:24:47+01:00">59e206d693b6673b</xxh64>
+      <xxh128 action="original" hashdate="2026-11-20T06:24:47+01:00">2067e7d7a5fa88175131015a6cf9afd3</xxh128>
+    </hash>
+    <hash>
+      <path size="302000" lastmodificationdate="2026-11-20T06:24:45+01:00">CLIP/A001C002.bin</path>
+      <xxh64 action="original" hashdate="2026-11-20T06:24:47+01:00">6af202a8b9f11bd8</xxh64>
+      <xxh128 action="original" hashdate="2026-11-20T06:24:47+01:00">5ce1b32dec576775bd9f6d43b2d2453e</xxh128>
+    </hash>
+    <hash>
+      <path size="303000" lastmodificationdate="2026-11-20T06:24:45+01:00">CLIP/A001C003.bin</path>
+      <xxh64 action="original" hashdate="2026-11-20T06:24:47+01:00">d52e95664eb3788f</xxh64>
+      <xxh128 action="original" hashdate="2026-11-20T06:24:47+01:00">a7e101b9dcd2b1d85a91eb47b9874bb8</xxh128>
+    </hash>
+    <hash>
+      <path size="304000" lastmodificationdate="2026-11-20T06:24:45+01:00">CLIP/A001C004.bin</path>
+      <xxh64 action="original" hashdate="2026-11-20T06:24:47+01:00">0badd5227cb00ae1</xxh64>
+      <xxh128 action="original" hashdate="2026-11-20T06:24:47+01:00">155ec5a7f41f73dd1cdc97b1adf6aab2</xxh128>
+    </hash>
+    <hash>
+      <path size="305000" lastmodificationdate="2026-11-20T06:24:45+01:00">CLIP/A001C005.bin</path>
+      <xxh64 action="original" hashdate="2026-11-20T06:24:47+01:00">e788e3b743f19139</xxh64>
+      <xxh128 action="original" hashdate="2026-11-20T06:24:47+01:00">69771a7cc5918789a34418cd58c20c8a</xxh128>
+    </hash>
+  </hashes>
+</hashlist>
