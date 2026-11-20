@@ -32,7 +32,8 @@ final class OtsNetworkTests: XCTestCase {
         var b: [UInt8] = []
         for i in 0..<n {
             if i < n - 1 { b.append(0xff) }
-            b += [0xf0, 0x02, UInt8(truncatingIfNeeded: i >> 8), UInt8(truncatingIfNeeded: i), 0x00]
+            let head: [UInt8] = [0xf0, 0x02, UInt8(truncatingIfNeeded: i >> 8), UInt8(truncatingIfNeeded: i), 0x00]
+            b += head
             b += bitcoinTag
             b += [0x01, 0x01]
         }
@@ -136,7 +137,7 @@ final class OtsNetworkTests: XCTestCase {
             XCTAssertEqual(req.header("Accept"), OtsNetworkTests.otsAccept)
             let m: [UInt8] = OtsTest.sha256(OtsNetworkTests.prefix(i + 1) + commitment.message)
             let at = OtsAttestation.pending(urls[i])
-            XCTAssertTrue(pairs.contains { p in p.attestation == at && p.message == m })
+            XCTAssertTrue(OtsTest.has(pairs, at, at: m))
         }
         XCTAssertFalse(file.isComplete)
         let bytes = try file.toBytes()
@@ -192,7 +193,11 @@ final class OtsNetworkTests: XCTestCase {
         let huge = stubServer { _, _ in .chunked(five) }
         let hugeLength = stubServer { _, _ in .reply(200, five) }
         let garbage = replying(200, "<html><body>calendar maintenance</body></html>")
-        let trailing = stubServer { server, _ in .reply(200, OtsNetworkTests.answer(OtsNetworkTests.prefix(9), server.url) + [0x00]) }
+        let trailing = stubServer { server, _ in
+            var body: [UInt8] = OtsNetworkTests.answer(OtsNetworkTests.prefix(9), server.url)
+            body.append(0x00)
+            return .reply(200, body)
+        }
         // 254 operations read (the limit is 255) but under the commitment (depth 2) the file would not: refused
         let deepBody: [UInt8] = [UInt8](repeating: 0x08, count: 254) + OtsNetworkTests.bitcoin358391
         let deep = stubServer { _, _ in .reply(200, deepBody) }
@@ -257,9 +262,10 @@ final class OtsNetworkTests: XCTestCase {
 
         // only the caller's own cancellation throws
         let url = silent.url
-        let task = Task { () -> StampResult in
-            try await OtsCalendar.stamp(http, digest: OtsNetworkTests.digest, calendars: [url], minimum: 1,
-                                        timeout: OtsNetworkTests.patient)
+        let task = Task { () -> Bool in
+            let r = try await OtsCalendar.stamp(http, digest: OtsNetworkTests.digest, calendars: [url], minimum: 1,
+                                                timeout: OtsNetworkTests.patient)
+            return r.file != nil
         }
         try await Task.sleep(nanoseconds: 300_000_000)
         task.cancel()
@@ -317,9 +323,9 @@ final class OtsNetworkTests: XCTestCase {
         let pairs = g.timestamp.all()
         XCTAssertEqual(pairs.count, 2)
         let pendingAt = OtsAttestation.pending(done.url)
-        XCTAssertTrue(pairs.contains { p in p.attestation == pendingAt && p.message == gm })
+        XCTAssertTrue(OtsTest.has(pairs, pendingAt, at: gm))
         let anchored: [UInt8] = OtsTest.sha256(gm + [0xde, 0xad, 0xbe, 0xef])
-        XCTAssertTrue(pairs.contains { p in p.attestation == OtsAttestation.bitcoin(358391) && p.message == anchored })
+        XCTAssertTrue(OtsTest.has(pairs, OtsAttestation.bitcoin(358391), at: anchored))
         let bytes = try g.toBytes()
         XCTAssertEqual(try OtsFile.parse(bytes).toBytes(), bytes)
 
@@ -380,7 +386,11 @@ final class OtsNetworkTests: XCTestCase {
     func testUpgradeAtMost16Calendars() async throws {
         let http = OtsNetworkTests.http()
         let notYet = replying(404, "Pending confirmation in Bitcoin blockchain")
-        let uris: [String] = (0..<20).map { i in i < 10 ? "\(notYet.url)/c0\(i)" : "\(notYet.url)/c\(i)" }
+        var uris: [String] = []
+        for i in 0..<20 {
+            let two = i < 10 ? "0\(i)" : "\(i)"
+            uris.append("\(notYet.url)/c\(two)")
+        }
         let (f, _) = try OtsNetworkTests.pendingFile(uris)
         let notes = Notes()
 
@@ -389,7 +399,10 @@ final class OtsNetworkTests: XCTestCase {
         XCTAssertEqual(added, 0)
 
         XCTAssertEqual(notYet.requests.count, 16)
-        let expected: [String] = uris.sorted().prefix(16).map { String($0.dropFirst(notYet.url.count)) + "/timestamp/" }
+        var expected: [String] = []
+        for u in uris.sorted().prefix(16) {
+            expected.append(String(u.dropFirst(notYet.url.count)) + "/timestamp/")
+        }
         var asked: [String] = []
         for r in notYet.requests {
             let end = try XCTUnwrap(r.path.range(of: "/timestamp/"))

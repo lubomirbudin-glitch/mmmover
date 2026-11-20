@@ -53,6 +53,18 @@ enum OtsTest {
         return calendar.date(from: c)!
     }
 
+    /// The (message, attestation) pairs of a tree, as `OtsTimestamp.all()` gives them.
+    typealias Pairs = [(message: [UInt8], attestation: OtsAttestation)]
+
+    /// Whether `pairs` has `attestation` (at `message`, when given).
+    static func has(_ pairs: Pairs, _ attestation: OtsAttestation, at message: [UInt8]? = nil) -> Bool {
+        for p in pairs where p.attestation == attestation {
+            if let m = message, p.message != m { continue }
+            return true
+        }
+        return false
+    }
+
     static func write(_ t: OtsTimestamp) throws -> [UInt8] {
         var out: [UInt8] = []
         try t.write(to: &out)
@@ -215,7 +227,7 @@ final class OtsFormatTests: XCTestCase {
         }
         XCTAssertEqual(found?.tag, tag)
         XCTAssertEqual(found?.payload, payload)
-        XCTAssertTrue(back.timestamp.all().contains { $0.attestation == OtsAttestation.unknown(tag: tag, payload: payload) })
+        XCTAssertTrue(OtsTest.has(back.timestamp.all(), OtsAttestation.unknown(tag: tag, payload: payload)))
         XCTAssertEqual(try back.toBytes(), bytes)
     }
 
@@ -401,9 +413,9 @@ final class OtsFormatTests: XCTestCase {
         let bobMessage: [UInt8] = OtsTest.sha256(commitment.message + [0xbb])
         let aliceAt = OtsAttestation.pending(OtsTest.alice)
         let bobAt = OtsAttestation.pending(OtsTest.bob)
-        XCTAssertTrue(pairs.contains { p in p.attestation == aliceAt && p.message == aliceMessage })
-        XCTAssertTrue(pairs.contains { p in p.attestation == bobAt && p.message == bobMessage })
-        XCTAssertTrue(pairs.contains { p in p.attestation == OtsAttestation.bitcoin(800_000) })
+        XCTAssertTrue(OtsTest.has(pairs, aliceAt, at: aliceMessage))
+        XCTAssertTrue(OtsTest.has(pairs, bobAt, at: bobMessage))
+        XCTAssertTrue(OtsTest.has(pairs, OtsAttestation.bitcoin(800_000)))
         XCTAssertTrue(a.isComplete)
 
         // merging again changes nothing; the bytes read back the same
