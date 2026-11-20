@@ -160,7 +160,8 @@ jobs:
           TAG=mac-v$VERSION
           gh release view "$TAG" >/dev/null 2>&1 ||
             gh release create "$TAG" --prerelease --latest=false --target "$GITHUB_SHA" \
-              --title "mmMover for Mac $VERSION" --notes "mmMover for Mac $VERSION."
+              --title "mmMover for Mac $VERSION" --notes "mmMover for Mac $VERSION." ||
+            gh release view "$TAG" >/dev/null
           gh release upload "$TAG" "$ZIP" --clobber
 
   build-intel:
@@ -283,5 +284,6 @@ jobs:
           TAG=mac-v$VERSION
           gh release view "$TAG" >/dev/null 2>&1 ||
             gh release create "$TAG" --prerelease --latest=false --target "$GITHUB_SHA" \
-              --title "mmMover for Mac $VERSION" --notes "mmMover for Mac $VERSION."
+              --title "mmMover for Mac $VERSION" --notes "mmMover for Mac $VERSION." ||
+            gh release view "$TAG" >/dev/null
           gh release upload "$TAG" "$ZIP" --clobber
