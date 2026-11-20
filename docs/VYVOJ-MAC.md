@@ -182,6 +182,10 @@ Formát záznamu: `datum — co se změnilo (commit / verze)`.
       ji smaže; kontrola odpojení těsně před startem; ostrý offload se složkou → řádky v reportu;
     - úkol 25: ikona v Docku, ⌘⇥ a Finderu; 11 LUTů v *Proxy › LUT*.
 
+## Plán 11 (Mac) — Offload Proof
+
+- **M0 — CI (2026-11-20):** workflow „Mac Apple Silicon“ má vstupy `tests` (výraz pro `swift test --filter`, prázdný = celá sada), `app` (false = jen Build a Test, bez ffmpeg, braw-decode, aplikace, zipu a publikace) a `intel` (druhý job `build-intel` na `macos-15-intel` s ffmpeg/ffprobe 8.1 x86_64 z evermeet.cx pinnutým SHA-256, zip `mmMover-Mac-Intel-<verze>.zip`); proč: Mac kód se tu nedá přeložit ani otestovat, takže další úkoly plánu 11 ho zkouší na větvi `offload-proof` přes `-f tests=… -f app=false` a Intel build jde z CI i bez MacBooku. Push do `main` se nemění (celá sada + aplikace).
+
 ## 2026-10-14 — třetí build: mmMover pro Mac s Apple Silicon (0.7.0, arm64)
 
 - Workflow [`.github/workflows/mac-apple-silicon.yml`](../.github/workflows/mac-apple-silicon.yml) na GitHub runneru
