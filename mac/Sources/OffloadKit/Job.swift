@@ -33,10 +33,38 @@ public struct JobConfig: Codable, Equatable {
     public var primaryDestination: Int?
     /// The day report on every destination after the job (settings `outputs.dayReport`, CLI --no-day-report).
     public var dayReport = true
+    /// Plan 11 (Offload Proof): SHA-256 of every file in the card read (`files[].sha256`) for the proof of the copy. Off by
+    /// default here; the app and the CLI turn it on from the settings (profile `proof`).
+    public var proof = false
 
     public init(source: String, destRoots: [String]) {
         self.source = source
         self.destRoots = destRoots
+    }
+
+    /// Every key as before; `proof` (plan 11) may be missing — a config written before it has the proof off.
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        source = try c.decode(String.self, forKey: .source)
+        destRoots = try c.decode([String].self, forKey: .destRoots)
+        cardName = try c.decodeIfPresent(String.self, forKey: .cardName)
+        date = try c.decodeIfPresent(String.self, forKey: .date)
+        verify = try c.decode(Bool.self, forKey: .verify)
+        chunkMB = try c.decode(Int.self, forKey: .chunkMB)
+        buffers = try c.decode(Int.self, forKey: .buffers)
+        allowSameDevice = try c.decode(Bool.self, forKey: .allowSameDevice)
+        analyzeClips = try c.decode(Bool.self, forKey: .analyzeClips)
+        proxy = try c.decode(ProxySettings.self, forKey: .proxy)
+        tools = try c.decode(ExternalTools.self, forKey: .tools)
+        recordHistory = try c.decode(Bool.self, forKey: .recordHistory)
+        historyFolder = try c.decodeIfPresent(String.self, forKey: .historyFolder)
+        project = try c.decodeIfPresent(String.self, forKey: .project)
+        appendInto = try c.decodeIfPresent([String].self, forKey: .appendInto)
+        verifyInProxy = try c.decode(Bool.self, forKey: .verifyInProxy)
+        verifyPrimary = try c.decode(String.self, forKey: .verifyPrimary)
+        primaryDestination = try c.decodeIfPresent(Int.self, forKey: .primaryDestination)
+        dayReport = try c.decode(Bool.self, forKey: .dayReport)
+        proof = try c.decodeIfPresent(Bool.self, forKey: .proof) ?? false
     }
 }
 
@@ -154,11 +182,14 @@ public final class OffloadJob {
     /// The built-in LUTs the job chooses from (tests pass the repo's shared/luts).
     let luts: LutCatalog
 
-    /// Tests pass their own engine options (allowSourceVolume, beforeFileCopy …) and LUT catalog.
+    /// Tests pass their own engine options (allowSourceVolume, beforeFileCopy …) and LUT catalog. The proof is always the
+    /// config's (plan 11, as Windows `Prepare`: also for a job made with its own options).
     init(config: JobConfig, options: OffloadOptions, luts: LutCatalog = .shared) {
         self.config = config
         self.luts = luts
-        engine = OffloadEngine(options: options)
+        var o = options
+        o.proof = config.proof
+        engine = OffloadEngine(options: o)
     }
 
     static func engineOptions(_ config: JobConfig) -> OffloadOptions {
@@ -167,6 +198,7 @@ public final class OffloadJob {
         o.bufferCount = config.buffers
         o.verify = config.verify
         o.allowSameDevice = config.allowSameDevice
+        o.proof = config.proof
         return o
     }
 

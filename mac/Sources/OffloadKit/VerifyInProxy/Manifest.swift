@@ -47,6 +47,9 @@ public struct ManifestRecord: Codable, Equatable {
     public var xxh64: String?
     public var xxh128: String?
     public var md5: String?
+    /// Plan 11 (Offload Proof): the card's SHA-256 of the file when the copy had the proof on (64 lower-case hex digits,
+    /// no prefix; written only when set) — a resume knows it for the files it does not read again.
+    public var sha256: String?
     public var blockSize = 0
     /// `part` only: the index of the first block in `blocks` (not written when 0).
     public var first = 0
@@ -54,14 +57,15 @@ public struct ManifestRecord: Codable, Equatable {
     public var blocks: [String] = []
 
     public init(kind: String = ManifestRecord.fileKind, gen: Int, path: String, size: Int64, modified: Date, xxh64: String? = nil,
-                xxh128: String? = nil, md5: String? = nil, blockSize: Int, first: Int = 0, blocks: [String]) {
+                xxh128: String? = nil, md5: String? = nil, sha256: String? = nil, blockSize: Int, first: Int = 0, blocks: [String]) {
         self.kind = kind; self.gen = gen; self.path = path; self.size = size
         self.modified = Date(timeIntervalSince1970: floor(modified.timeIntervalSince1970))
-        self.xxh64 = xxh64; self.xxh128 = xxh128; self.md5 = md5; self.blockSize = blockSize; self.first = first
+        self.xxh64 = xxh64; self.xxh128 = xxh128; self.md5 = md5; self.sha256 = sha256
+        self.blockSize = blockSize; self.first = first
         self.blocks = blocks
     }
 
-    enum CodingKeys: String, CodingKey { case v, kind, gen, path, size, modified, xxh64, xxh128, md5, blockSize, first, blocks }
+    enum CodingKeys: String, CodingKey { case v, kind, gen, path, size, modified, xxh64, xxh128, md5, sha256, blockSize, first, blocks }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -74,6 +78,8 @@ public struct ManifestRecord: Codable, Equatable {
         xxh64 = try c.decodeIfPresent(String.self, forKey: .xxh64)
         xxh128 = try c.decodeIfPresent(String.self, forKey: .xxh128)
         md5 = try c.decodeIfPresent(String.self, forKey: .md5)
+        // R5: a sha256 that is not even a string drops only the sha256, never the record (the proof never changes the job).
+        sha256 = try? c.decodeIfPresent(String.self, forKey: .sha256)
         blockSize = try c.decodeIfPresent(Int.self, forKey: .blockSize) ?? 0
         first = try c.decodeIfPresent(Int.self, forKey: .first) ?? 0
         blocks = try c.decodeIfPresent([String].self, forKey: .blocks) ?? []
@@ -84,7 +90,7 @@ public struct ManifestRecord: Codable, Equatable {
         try c.encode(v, forKey: .v); try c.encode(kind, forKey: .kind); try c.encode(gen, forKey: .gen)
         try c.encode(path, forKey: .path); try c.encode(size, forKey: .size); try c.encode(modified, forKey: .modified)
         try c.encodeIfPresent(xxh64, forKey: .xxh64); try c.encodeIfPresent(xxh128, forKey: .xxh128)
-        try c.encodeIfPresent(md5, forKey: .md5)
+        try c.encodeIfPresent(md5, forKey: .md5); try c.encodeIfPresent(sha256, forKey: .sha256)
         try c.encode(blockSize, forKey: .blockSize)
         if first != 0 { try c.encode(first, forKey: .first) }
         try c.encode(blocks, forKey: .blocks)
@@ -113,6 +119,21 @@ public struct ManifestRecord: Codable, Equatable {
     public var xxh64Value: UInt64? {
         guard let x = xxh64, x.count == 16 else { return nil }
         return UInt64(x, radix: 16)
+    }
+
+    /// Plan 11 (ruling R5, Windows `Hashes()`): the sha256 as the copy uses it — 64 hex digits, lower-cased; nil when it
+    /// is missing or malformed. Only the SHA-256 goes then: a field only the proof uses never makes a recorded copy
+    /// unknown (the proof leaves the file out with reason "hash").
+    public var sha256Value: String? {
+        guard let s = sha256, s.utf8.count == 64, s.utf8.allSatisfy(ManifestRecord.isHexDigit) else { return nil }
+        return s.lowercased()
+    }
+
+    static func isHexDigit(_ b: UInt8) -> Bool {
+        let digit: Bool = b >= 48 && b <= 57
+        let upper: Bool = b >= 65 && b <= 70
+        let lower: Bool = b >= 97 && b <= 102
+        return digit || upper || lower
     }
 }
 

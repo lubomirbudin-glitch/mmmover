@@ -28,11 +28,16 @@ public struct FileHashes: Equatable {
     public var md5: Data?
     /// XXH3-128, 32 lower-case hex digits, high 64 bits first (canonical form).
     public var xxh128: String?
+    /// Plan 11 (Offload Proof): SHA-256 of the card's file, 64 lower-case hex digits without a prefix (the `sha256:`
+    /// prefix is only the proof manifest's) — only a copy with the proof on computes it, in the card read, never in the
+    /// read-back; nil otherwise.
+    public var sha256: String?
 
-    public init(xxh64: UInt64? = nil, md5: Data? = nil, xxh128: String? = nil) {
+    public init(xxh64: UInt64? = nil, md5: Data? = nil, xxh128: String? = nil, sha256: String? = nil) {
         self.xxh64 = xxh64
         self.md5 = md5
         self.xxh128 = xxh128
+        self.sha256 = sha256
     }
 
     public var xxh64Hex: String? { xxh64.map(hex64) }
