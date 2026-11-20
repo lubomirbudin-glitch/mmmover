@@ -245,6 +245,10 @@ class OtsParseTests(unittest.TestCase):
         deep = b"\x08" * 300 + att
         with self.assertRaises(vp.OtsError):
             vp.parse_ots(self._file(deep))
+        # Final fix C1: the reference's limit, as mmMover's -- a chain of 255 operations reads, 256 do not.
+        self.assertEqual(len(vp.parse_ots(self._file(b"\x08" * 255 + att)).pairs), 1)
+        with self.assertRaises(vp.OtsError):
+            vp.parse_ots(self._file(b"\x08" * 256 + att))
 
     def test_ops_compute(self):
         att = b"\x00" + vp.TAG_BITCOIN + b"\x01\x07"
@@ -340,6 +344,20 @@ class BitcoinTests(unittest.TestCase):
         ots = vp.OtsFile(b"\0" * 32, [(self.msg, vp.Attestation("bitcoin", 800005)), (self.msg, vp.Attestation("bitcoin", 800000))])
         c = self.check(explorer({800000: self.header}), ots=ots)
         self.assertEqual((c.outcome, c.height), ("verified", 800000))
+
+    def test_at_most_16_heights_are_asked(self):
+        # Final fix C2: a hostile .ots with many Bitcoin heights costs at most 16 lookups (the lowest), and says so.
+        asked = []
+
+        def get(url):
+            asked.append(url)
+            raise IOError("down")
+        ots = vp.OtsFile(b"\0" * 32, [(self.msg, vp.Attestation("bitcoin", 800000 + i)) for i in range(40)])
+        notes = []
+        c = vp.check_bitcoin(ots, [A], get, REGTEST_LIMIT, note=notes.append)
+        self.assertEqual(c.outcome, "notchecked")
+        self.assertEqual(sorted({int(u.rsplit("/", 1)[1]) for u in asked}), list(range(800000, 800016)))
+        self.assertEqual(notes, ["the .ots has Bitcoin attestations at 40 heights — only the lowest 16 were checked"])
 
     def test_compact_targets(self):
         self.assertEqual(vp.compact_target(0x1D00FFFF), 0xFFFF << (8 * 26))
@@ -612,6 +630,45 @@ class VerifyTests(unittest.TestCase):
         self.assertEqual(v.outcome, "FAILED")
         self.assertIn("Changed:   CLIP/A.mov", v.lines)
         self.assertEqual(v.lines[-1], "RESULT:    FAILED — 1 file changed since the proof was made.")
+
+    def test_hostile_manifests_fail_never_raise(self):
+        # Final fix A3: an edited (hostile) manifest is a line, never an exception -- a hash with a trailing "\n", a size
+        # past 2^53 - 1 (canonical JSON cannot hold it), `excluded` that is no list, numbers out of their range.
+        get = self.anchored_for(self.c)
+        good = self.c.manifest_bytes()
+        digest = sha(self.c.files["CLIP/A.mov"]).hex()
+        size = len(self.c.files["CLIP/A.mov"])
+        for old, new, why in (
+                (digest.encode() + b'"', digest.encode() + b'\\n"', "sha256"),
+                (b'"size":%d,' % size, b'"size":9007199254740992,', "size"),
+                (b'"size":%d,' % size, b'"size":-1,', "size"),
+                (b',"files":[', b',"excluded":5,"files":[', "excluded"),
+                (b'"version":1', b'"version":0', "version"),
+                (b'"generation":1', b'"generation":0', "generation"),
+                (b'"count":3', b'"count":-1', "count"),
+                (b'"mhl":[]', b'"mhl":5', "mhl")):
+            bad = good.replace(old, new)
+            self.assertNotEqual(bad, good, why)
+            self.c.write_manifest(bad)
+            for v in (self.run_file("CLIP/A.mov", get),
+                      vp.verify_folder(self.c.card, sources=[A, B], get=get, pow_limit=REGTEST_LIMIT)):
+                self.assertEqual(v.outcome, "FAILED", (why, v.lines))
+                self.assertTrue(self.last(v).startswith("RESULT:    FAILED — offload_proof.json is not a valid proof manifest ("), v.lines)
+                self.assertIn(why, self.last(v))
+        self.c.write_manifest(good)
+
+    def test_extra_key_of_a_later_writer_is_no_edit(self):
+        # Final fix C1: the canonical check is on the parsed JSON, so a key a later writer added (canonical, anchored) is OK.
+        self.c.obj["later"] = {"note": "a newer mmMover"}
+        self.c.write_manifest()
+        v = self.run_file("CLIP/A.mov", self.anchored_for(self.c))
+        self.assertEqual(v.outcome, "OK", v.lines)
+
+    def test_ots_over_4_mb_is_refused(self):
+        # Final fix C1: the same cap as mmMover's (4 MB).
+        self.c.write_ots(b"\x00" + vp.TAG_PENDING + b"\x02\x01a" + b"\x00" * (4 * 1024 * 1024))
+        v = self.run_file("CLIP/A.mov")
+        self.assertEqual(self.last(v), "RESULT:    FAILED — offload_proof.json.ots is not a valid timestamp (larger than 4 MB).")
 
     def test_cli_offline_exit_codes(self):
         self.c.write_pending_ots()

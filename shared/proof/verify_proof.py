@@ -34,9 +34,10 @@ HEADER_SOURCES = ["https://blockstream.info/api", "https://mempool.space/api"]
 POW_LIMIT = (1 << 224) - 1  # Bitcoin's proof-of-work limit: no block's target was ever easier
 CLOCK_TOLERANCE_SECONDS = 48 * 3600
 MAX_FILE_BYTES = 256 * 1024 * 1024  # a manifest of a million files is ~300 MB; larger is not ours
-MAX_OTS_BYTES = 16 * 1024 * 1024
+MAX_OTS_BYTES = 4 * 1024 * 1024  # a real .ots is a few kB (the same cap as mmMover's)
 MAX_HTTP_BYTES = 64 * 1024
 MAX_INT = 9007199254740991  # 2^53 - 1: RFC 8785 numbers are IEEE doubles; the manifest has only small integers
+MAX_HEIGHTS = 16  # Bitcoin heights looked up per .ots (a hostile one could list thousands)
 
 # ---------------------------------------------------------------------------------------------------------------
 # RIPEMD-160: hashlib has it only when OpenSSL does (OpenSSL 3 often hides it), so there is a pure-Python one.
@@ -231,7 +232,7 @@ TAG_BITCOIN = bytes.fromhex("0588960d73d71901")
 OTS_MAX_ARG = 4096  # op arguments and every intermediate message
 OTS_MAX_PAYLOAD = 8192
 OTS_MAX_URI = 1000
-OTS_MAX_DEPTH = 256
+OTS_MAX_DEPTH = 255  # the reference's recursion limit: a chain of at most 255 operations reads
 _URI_CHARS = frozenset(b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._/:")
 
 _UNARY = {0x02: ("sha1", lambda m: hashlib.sha1(m).digest()),
@@ -436,10 +437,16 @@ def get_header(height, sources, get, pow_limit=POW_LIMIT):
 BitcoinCheck = namedtuple("BitcoinCheck", "outcome height time sources problem")  # outcome: verified/mismatch/notchecked
 
 
-def check_bitcoin(ots, sources, get, pow_limit=POW_LIMIT):
+def check_bitcoin(ots, sources, get, pow_limit=POW_LIMIT, note=None):
     """The Bitcoin attestations of `ots`, lowest height first: the first whose message is the block's merkle root is
-    enough (verified); otherwise mismatch when a block's merkle root differs, notchecked when no header was had."""
+    enough (verified); otherwise mismatch when a block's merkle root differs, notchecked when no header was had.
+    At most MAX_HEIGHTS distinct heights are looked up (the lowest); `note(text)` is told when more were left out."""
     claims = sorted((att.value, msg) for msg, att in ots.pairs if att.kind == "bitcoin")
+    heights = sorted({h for h, _ in claims})
+    if len(heights) > MAX_HEIGHTS:
+        if note:
+            note("the .ots has Bitcoin attestations at %d heights — only the lowest %d were checked" % (len(heights), MAX_HEIGHTS))
+        claims = [(h, m) for h, m in claims if h <= heights[MAX_HEIGHTS - 1]]
     lookups = {}
     mismatch = notchecked = None
     for height, msg in claims:
@@ -472,12 +479,23 @@ Manifest = namedtuple("Manifest", "created card_name date generation files exclu
 ManifestFile = namedtuple("ManifestFile", "path size sha256")  # sha256: lower-case hex
 
 
-def _need(o, key, kind):
+def _need(o, key, kind, low=None, high=None):
+    """o[key] of type `kind` (an int also within [low, high]); ManifestError otherwise."""
     v = o.get(key) if isinstance(o, dict) else None
     ok = isinstance(v, kind) and not (kind is int and isinstance(v, bool))
     if not ok:
         raise ManifestError('missing or wrong "%s"' % key)
+    if kind is int and ((low is not None and v < low) or (high is not None and v > high)):
+        raise ManifestError('"%s" is out of range (%d)' % (key, v))
     return v
+
+
+def _objects(o, key):
+    """o[key]: a list of objects."""
+    items = _need(o, key, list)
+    if not all(isinstance(x, dict) for x in items):
+        raise ManifestError("%s[] entry" % key)
+    return items
 
 
 def _prefixed(o, key, prefix, n_hex):
@@ -499,18 +517,19 @@ def parse_manifest(data):
         raise ManifestError("The proof is not a JSON object.")
     if _need(obj, "format", str) != "mmmover-proof":
         raise ManifestError("Not an mmMover proof (format).")
-    if _need(obj, "version", int) > 1:
-        raise ManifestError("Proof version %d is newer than this program understands." % obj["version"])
+    version = _need(obj, "version", int)
+    if version > 1:
+        raise ManifestError("Proof version %d is newer than this program understands." % version)
+    if version != 1:
+        raise ManifestError('missing or wrong "version" (%d)' % version)
     card, merkle = _need(obj, "card", dict), _need(obj, "merkle", dict)
-    files = []
-    for f in _need(obj, "files", list):
-        size = _need(f, "size", int)
-        if size < 0:
-            raise ManifestError('"size" is negative')
-        files.append(ManifestFile(_need(f, "path", str), size, _prefixed(f, "sha256", "sha256:", 64)))
-    excluded = [(_need(e, "path", str), _need(e, "reason", str)) for e in obj.get("excluded", [])]
+    files = [ManifestFile(_need(f, "path", str), _need(f, "size", int, 0, MAX_INT), _prefixed(f, "sha256", "sha256:", 64))
+             for f in _objects(obj, "files")]
+    excluded = [(_need(e, "path", str), _need(e, "reason", str)) for e in (_objects(obj, "excluded") if "excluded" in obj else [])]
+    for m in _objects(obj, "mhl"):
+        _need(m, "destination", int, 1), _need(m, "path", str), _prefixed(m, "sha256", "sha256:", 64)
     return Manifest(_need(obj, "created", str), _need(card, "name", str), _need(card, "date", str),
-                    _need(card, "generation", int), files, excluded, _need(merkle, "count", int),
+                    _need(card, "generation", int, 1), files, excluded, _need(merkle, "count", int, 0, MAX_INT),
                     _prefixed(merkle, "root", "sha256:", 64)), obj
 
 
@@ -604,15 +623,17 @@ def _manifests(card):
 
 
 def _find_card(directory):
+    """-> (the nearest folder, this one or above, whose _REPORT holds a proof manifest, its manifests) or (None, [])."""
     d = directory
     while d:
-        if _manifests(d):
-            return d
+        found = _manifests(d)
+        if found:
+            return d, found
         parent = os.path.dirname(d)
         if parent == d:
-            return None
+            return None, []
         d = parent
-    return None
+    return None, []
 
 
 def _load(path):
@@ -649,6 +670,15 @@ def _clock_warning(created, block_time):
 
 
 def _check_manifest(m, offline, sources, get, pow_limit):
+    """One manifest's own checks. Whatever a hostile manifest still makes raise is FAILED -- not a valid proof manifest,
+    never an exception."""
+    try:
+        return _check_manifest_raw(m, offline, sources, get, pow_limit)
+    except (ValueError, TypeError, KeyError, ManifestError) as x:
+        return ManifestCheck("FAILED", False, [], "%s is not a valid proof manifest (%s)" % (m.name, str(x).rstrip(".")), None, None)
+
+
+def _check_manifest_raw(m, offline, sources, get, pow_limit):
     man = m.manifest
     lines = []
     if jcs_bytes(m.obj) != m.data:
@@ -666,7 +696,7 @@ def _check_manifest(m, offline, sources, get, pow_limit):
                              "yet when the files existed" % ots_name, None, None)
     try:
         if os.path.getsize(ots_path) > MAX_OTS_BYTES:
-            raise OtsError("larger than 16 MB")
+            raise OtsError("larger than 4 MB")
         with open(ots_path, "rb") as fh:
             ots = parse_ots(fh.read())
     except OtsError as x:
@@ -692,7 +722,9 @@ def _check_manifest(m, offline, sources, get, pow_limit):
         lines.append(_L("Anchor", "Bitcoin block %d (in %s; not checked — offline)" % (claimed, ots_name)))
         return ManifestCheck("NOT YET", True, lines, "the Bitcoin block was not checked (offline)", None, claimed)
 
-    check = check_bitcoin(ots, sources, get, pow_limit)
+    notes = []
+    check = check_bitcoin(ots, sources, get, pow_limit, note=notes.append)
+    lines.extend(_L("Warning", n) for n in notes)
     if check.outcome == "verified":
         lines.append(_L("Anchor", "Bitcoin block %d, %s (%s)" % (check.height, _utc(check.time), _agree(check.sources))))
         if len(check.sources) == 1:
@@ -723,7 +755,7 @@ def verify_file(file, offline=False, sources=None, timeout=10, get=None, pow_lim
     if not os.path.isfile(full):
         lines.append(_L("File", file))
         return _final(lines, "FAILED", "the file is not there")
-    card = _find_card(os.path.dirname(full))
+    card, found = _find_card(os.path.dirname(full))
     rel = _relative(card, full) if card else os.path.basename(full)
     lines.append(_L("File", rel))
     try:
@@ -734,7 +766,7 @@ def verify_file(file, offline=False, sources=None, timeout=10, get=None, pow_lim
         lines.append(_L("SHA-256", digest))
         return _final(lines, "FAILED", NO_PROOF_FILE)
 
-    loaded = [_load(p) for p in _manifests(card)]
+    loaded = [_load(p) for p in found]
     matches = []
     for m in loaded:
         if m.manifest is None:
@@ -745,6 +777,8 @@ def verify_file(file, offline=False, sources=None, timeout=10, get=None, pow_lim
     unreadable = [m for m in loaded if m.error]
     if not matches:
         lines.append(_L("SHA-256", digest))
+        if not loaded:
+            return _final(lines, "FAILED", NO_PROOF_FILE)
         if len(unreadable) == len(loaded):
             return _final(lines, "FAILED", unreadable[0].error)
         for m in loaded:
@@ -803,11 +837,11 @@ def verify_folder(folder, offline=False, sources=None, timeout=10, get=None, pow
     if not os.path.isdir(full):
         lines.append(_L("Card", folder))
         return _final(lines, "FAILED", "the folder is not there")
-    card = _find_card(full)
+    card, found = _find_card(full)
     lines.append(_L("Card", card or full))
-    if card is None:
+    if card is None or not found:
         return _final(lines, "FAILED", NO_PROOF_FOLDER)
-    loaded = [_load(p) for p in _manifests(card)]
+    loaded = [_load(p) for p in found]
     several = len(loaded) > 1
     ok = changed = missing = unreadable = 0
     failures, waiting, anchors = [], [], []
