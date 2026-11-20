@@ -43,4 +43,12 @@ public class SettingsTextsTests
         Assert.Equal("Windows: off · phone (ntfy): film-x",
             SettingsTexts.NotifySummary(new NotifySettings { Windows = false, Ntfy = new NtfySettings { Enabled = true, Topic = "film-x" } }));
     }
+
+    // Plan 11 (Offload Proof): the switch under the verification options and its help line.
+    [Fact]
+    public void Proof_SwitchAndHelpLine()
+    {
+        Assert.Equal("Offload Proof — anchor every offload in time", SettingsTexts.ProofLabel);
+        Assert.Equal("Only a fingerprint (hash) leaves this computer, never files or names. Free (OpenTimestamps, Bitcoin).", SettingsTexts.ProofNote);
+    }
 }

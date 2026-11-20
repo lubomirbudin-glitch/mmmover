@@ -88,3 +88,6 @@ readme in the zip. Developer docs in `docs/` and code comments stay as they are 
 | Přeskočeno | Skipped |
 | Hotovo | Done |
 | Selhalo / chyba | Failed / error |
+| Důkaz zálohy (časové razítko v Bitcoinu, plán 11) | Offload Proof |
+| ukotveno (důkaz je v bloku Bitcoinu) | anchored |
+| ukotvuje se (čeká na Bitcoin) | anchoring |

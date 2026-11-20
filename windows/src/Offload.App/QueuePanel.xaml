@@ -27,11 +27,13 @@
             </Style.Triggers>
         </Style>
 
-        <!-- Plan 10 (R5, spec 9): the two verdicts of the card, never merged — "Safe to eject" and "Safe to format". -->
+        <!-- Plan 10 (R5, spec 9): the two verdicts of the card, never merged — "Safe to eject" and "Safe to format"; plan 11: the
+             proof chip beside them (only once a proof is sealed or failed). -->
         <Style x:Key="VerdictChip" TargetType="Border">
             <Setter Property="CornerRadius" Value="10" />
             <Setter Property="Padding" Value="10,3" />
-            <Setter Property="Margin" Value="0,0,8,0" />
+            <!-- 6 above (the panel has 6 less): the same row as before, a gap when the three chips wrap -->
+            <Setter Property="Margin" Value="0,6,8,0" />
             <Setter Property="Background" Value="{DynamicResource Track}" />
             <Style.Triggers>
                 <DataTrigger Binding="{Binding Tone}" Value="Ok">
@@ -62,15 +64,21 @@
             </Style.Triggers>
         </Style>
         <DataTemplate x:Key="VerdictChips">
-            <StackPanel Orientation="Horizontal" Margin="0,12,0,0" Visibility="{Binding ShowChips, Converter={StaticResource BoolToVisible}}"
-                        AutomationProperties.AutomationId="VerdictChips">
+            <WrapPanel Orientation="Horizontal" Margin="0,6,0,0" Visibility="{Binding ShowChips, Converter={StaticResource BoolToVisible}}"
+                       AutomationProperties.AutomationId="VerdictChips">
                 <Border Style="{StaticResource VerdictChip}" DataContext="{Binding EjectChip}">
                     <TextBlock Text="{Binding Text}" Style="{StaticResource VerdictChipText}" AutomationProperties.AutomationId="EjectChip" />
                 </Border>
                 <Border Style="{StaticResource VerdictChip}" DataContext="{Binding FormatChip}">
                     <TextBlock Text="{Binding Text}" Style="{StaticResource VerdictChipText}" AutomationProperties.AutomationId="FormatChip" />
                 </Border>
-            </StackPanel>
+                <!-- the outer border keeps the card's DataContext (the tooltip), the inner one is the chip -->
+                <Border ToolTip="{Binding ProofTooltip}" Visibility="{Binding ProofChip, Converter={StaticResource NullToCollapsed}}">
+                    <Border Style="{StaticResource VerdictChip}" DataContext="{Binding ProofChip}">
+                        <TextBlock Text="{Binding Text}" Style="{StaticResource VerdictChipText}" AutomationProperties.AutomationId="ProofChip" />
+                    </Border>
+                </Border>
+            </WrapPanel>
         </DataTemplate>
         <!-- Spec 7, 9: a content defect of a clip (the copy matches the card) — its place, a picture, and the confirmation. -->
         <DataTemplate x:Key="ContentWarnings">

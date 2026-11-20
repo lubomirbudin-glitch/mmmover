@@ -562,6 +562,7 @@ public sealed partial class MainViewModel
         ticker.Stop();
         healthTimer.Stop();
         updateTimer.Stop();
+        StopProofs();
         queue.Dispose();
         SaveNow();
         return true;

@@ -78,11 +78,13 @@ public sealed partial class MainViewModel
                 break;
             }
             case DemoState.Finished:
+                SeedDemoProofs(roots);
                 Jobs.Insert(0, new JobItemViewModel(this, DemoScenario.Mismatch(Source("B012_FX6"), roots), "B012_FX6", canEject: false));
                 Jobs.Insert(0, new JobItemViewModel(this, DemoScenario.Done(Source("A035_ARRI"), roots, GreyThumbnail), "A035_ARRI", canEject: false));
                 break;
             case DemoState.Verifying:
                 // Plan 10 (R5): both verdicts for the screenshots — "Safe to eject" while verifying, the content defect, "Safe to format".
+                SeedDemoProofs(roots);
                 Jobs.Insert(0, new JobItemViewModel(this, DemoScenario.Done(Source("A035_ARRI"), roots, GreyThumbnail), "A035_ARRI", canEject: false));
                 Jobs.Insert(0, new JobItemViewModel(this, DemoScenario.ContentDefect(Source("A037_ARRI"), roots, GreyThumbnail), "A037_ARRI", canEject: false));
                 Jobs.Insert(0, new JobItemViewModel(this, DemoScenario.Verifying(Source("A036_ARRI"), roots), "A036_ARRI", canEject: false,
@@ -95,6 +97,12 @@ public sealed partial class MainViewModel
         }
         foreach (var j in Jobs) j.Refresh();
         RaiseMany(nameof(HasJobs), nameof(HasFinished), nameof(Today), nameof(HistoryDays));
+    }
+
+    /// Plan 11: the proof chips of the finished demo cards come from the demo's own entries (the real queue is off).
+    void SeedDemoProofs(IReadOnlyList<string> roots)
+    {
+        foreach (var e in DemoScenario.Proofs(roots)) proofEntries[e.Id] = e;
     }
 
     static readonly Color[] ThumbColors =

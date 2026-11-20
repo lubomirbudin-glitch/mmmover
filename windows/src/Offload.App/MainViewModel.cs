@@ -32,6 +32,7 @@ public sealed partial class MainViewModel : ObservableObject
         InitNotify();
         InitUpdates();
         InitSettingsPage();
+        InitProof();
         InitDemo();
     }
 

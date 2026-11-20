@@ -1,4 +1,5 @@
 using Offload.Core.Desktop;
+using Offload.Core.Proof;
 
 namespace Offload.Core.Tests;
 
@@ -114,6 +115,25 @@ public class DemoScenarioTests
         Assert.Equal((@"XDROOT\Clip\B012C015_261007_9QW1.MXF", "RAID_A ✓", "SHUTTLE_B ✕ hash"), (row.Path, row.Disks[0].Text, row.Disks[1].Text));
         Assert.True(RepairRules.Offer(bad.Status().Phase, bad.Report, cardPresent: true, repairPending: false));
     }
+
+    // Plan 11: the finished demo cards show the proof chip from entries of the demo itself (nothing is read or stamped):
+    // A035 anchored on both disks, A037 still anchoring; the mismatch sealed none.
+    [Fact]
+    public void Finished_ProofChips()
+    {
+        var proofs = DemoScenario.Proofs(Roots).ToDictionary(p => p.Id);
+        ProofEntry? Entry(OffloadJob job) => job.Status().ProofId is { } id ? proofs[id] : null;
+        CardChip? Chip(OffloadJob job) => JobCard.ProofChip(job.Config.Proof, job.Status().ProofError, Entry(job));
+
+        var done = DemoScenario.Done(@"C:\demo\A035_ARRI", Roots, null);
+        Assert.Equal(new CardChip("Proof: anchored", ChipTone.Ok), Chip(done));
+        Assert.StartsWith("Bitcoin block 912345 · ", JobCard.ProofTooltip(done.Config.Proof, null, Entry(done)));
+        Assert.Equal(Roots.Select(r => Path.Combine(r, "2026-10-07", "A035_ARRI")), Entry(done)!.CardPaths);
+        var defect = DemoScenario.ContentDefect(@"C:\demo\A037_ARRI", Roots, null);
+        Assert.Equal(new CardChip("Proof: anchoring", ChipTone.Neutral), Chip(defect));
+        Assert.Null(Chip(DemoScenario.Mismatch(@"C:\demo\B012_FX6", Roots)));
+        Assert.Null(Chip(DemoScenario.Verifying(@"C:\demo\A036_ARRI", Roots)));   // still verifying: nothing sealed yet
+    }
 }
 
 /// Ruling I3: the demo is sealed — its own app-data folder and every command that starts work or writes anything off.
@@ -136,7 +156,7 @@ public class DemoSealTests
     [Fact]
     public void TheCommands_AreTheOnesOfTheRuling()
     {
-        Assert.Equal(["Append", "Cancel", "DayReport", "Eject", "MeasurePorts", "Notify", "Pause", "ProjectEdit", "Repair", "Resume", "SettingsSave", "Start", "SummaryReport", "UpdateCheck", "VerifyBackup"],
+        Assert.Equal(["Append", "Cancel", "DayReport", "Eject", "MeasurePorts", "Notify", "Pause", "ProjectEdit", "Proof", "Repair", "Resume", "SettingsSave", "Start", "SummaryReport", "UpdateCheck", "VerifyBackup"],
             Enum.GetNames<DemoCommand>().Order());
     }
 

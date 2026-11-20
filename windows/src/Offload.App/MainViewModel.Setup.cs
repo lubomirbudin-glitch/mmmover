@@ -105,6 +105,7 @@ public sealed partial class MainViewModel
     public void VolumesArrived(IReadOnlyList<string> roots)
     {
         foreach (var r in roots) ejectedRoots.Remove(r);
+        RunProofs();   // plan 11: a disk connected again gets the finished proof of its card folders
     }
 
     internal void CardEjected(string source)
@@ -561,6 +562,14 @@ public sealed partial class MainViewModel
     {
         get => Settings.VerifyPrimary == SettingsProfile.PrimaryFirst;
         set { Settings.VerifyPrimary = value ? SettingsProfile.PrimaryFirst : SettingsProfile.PrimaryFastest; SettingsChanged(); Raise(); }
+    }
+
+    /// Plan 11: "Offload Proof — anchor every offload in time" — `proof.enabled` of the profile (a started job keeps its
+    /// own; the queue finishes the proofs already sealed either way).
+    public bool ProofEnabled
+    {
+        get => Settings.Proof.Enabled;
+        set { Settings.Proof.Enabled = value; SettingsChanged(); Raise(); }
     }
 
     /// "Checksum" (spec 3.5): xxHash64 or xxHash64 + MD5 — `hash` in settings.json.

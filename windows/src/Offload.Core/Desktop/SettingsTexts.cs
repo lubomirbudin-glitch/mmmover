@@ -14,6 +14,10 @@ public static class SettingsTexts
         "The primary disk is verified while it is read for the proxies, the others at the same time in the background — no extra second read. The card is safe to eject after the copy and safe to format once all disks are verified. Without proxies, verification reads back.";
     public const string VerifyPrimaryFirstLabel = "The primary is the first destination (otherwise the fastest disk measured during the copy)";
 
+    /// Plan 11 (Offload Proof), Settings → Verification, under the verification options: the profile's `proof.enabled`.
+    public const string ProofLabel = "Offload Proof — anchor every offload in time";
+    public const string ProofNote = "Only a fingerprint (hash) leaves this computer, never files or names. Free (OpenTimestamps, Bitcoin).";
+
     /// Disks loaded automatically (2026-10-09), Settings → Folder structure.
     public const string AutoDestinationsLabel = "Automatically add connected disks as destinations";
     public const string AutoDestinationsNote =
