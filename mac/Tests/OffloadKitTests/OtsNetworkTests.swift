@@ -452,6 +452,58 @@ final class OtsNetworkTests: XCTestCase {
         XCTAssertFalse(OtsHTTP.followsRedirect(from: url("https://a.test/x"), to: url("https://a.test.evil.com/x")))
     }
 
+    // M3 review (Mac): a redirect step as Windows' SocketsHttpHandler takes it — never from https to http nor to another
+    // scheme (the 30x is the answer: "HTTP 301", as on Windows), to the host that was asked followed, to another host
+    // refused ("redirected to another host").
+    func testRedirectStepsAsWindows() {
+        func url(_ s: String) -> URL { URL(string: s)! }
+        let https = url("https://a.test/x")
+        let http = url("http://a.test/x")
+        XCTAssertEqual(OtsHTTP.redirectStep(asked: https, from: https, to: url("https://a.test/y")), .follow)
+        XCTAssertEqual(OtsHTTP.redirectStep(asked: http, from: http, to: url("https://a.test/y")), .follow)
+        XCTAssertEqual(OtsHTTP.redirectStep(asked: http, from: http, to: url("http://A.TEST/y")), .follow)
+        XCTAssertEqual(OtsHTTP.redirectStep(asked: https, from: https, to: url("http://a.test/y")), .stop)
+        XCTAssertEqual(OtsHTTP.redirectStep(asked: https, from: https, to: url("http://b.test/y")), .stop)
+        XCTAssertEqual(OtsHTTP.redirectStep(asked: http, from: http, to: url("ftp://a.test/y")), .stop)
+        XCTAssertEqual(OtsHTTP.redirectStep(asked: http, from: url("https://a.test/z"), to: url("http://a.test/y")), .stop)
+        XCTAssertEqual(OtsHTTP.redirectStep(asked: https, from: https, to: url("https://b.test/y")), .refuse)
+        XCTAssertEqual(OtsHTTP.redirectStep(asked: http, from: http, to: url("http://b.test/y")), .refuse)
+    }
+
+    // M3 review (Mac): after the answer, as Windows `OtsHttp.Send` checks the URI it answered from — only the host that
+    // was asked (any case), over the same scheme or https.
+    func testAnswerCountsOnlyFromTheAskedHost() {
+        func url(_ s: String) -> URL { URL(string: s)! }
+        let asked = url("http://a.test/digest")
+        XCTAssertNil(OtsHTTP.elsewhere(asked: asked, answered: nil))
+        XCTAssertNil(OtsHTTP.elsewhere(asked: asked, answered: asked))
+        XCTAssertNil(OtsHTTP.elsewhere(asked: asked, answered: url("https://A.test/digest")))
+        XCTAssertEqual(OtsHTTP.elsewhere(asked: asked, answered: url("http://b.test/digest")), "redirected to another host (b.test)")
+        XCTAssertEqual(OtsHTTP.elsewhere(asked: url("https://a.test/x"), answered: url("http://a.test/x")),
+                       "redirected to another host (a.test)")
+    }
+
+    // M3 review (Mac): CFNetwork would add Accept-Language with the user's languages — every request carries a fixed one,
+    // so only the nonce'd commitment and the User-Agent leave the machine.
+    func testEveryRequestHasAFixedAcceptLanguage() async throws {
+        let calendar = pendingCalendar(1)
+        let explorer = replying(404, "Block not found")
+        let http = OtsNetworkTests.http()
+
+        let r = try await OtsCalendar.stamp(http, digest: OtsNetworkTests.digest, calendars: [calendar.url], minimum: 1,
+                                            timeout: OtsNetworkTests.patient)
+        XCTAssertNotNil(r.file)
+        let look = try await BitcoinHeaders.get(http, height: 1, sources: [explorer.url], timeout: OtsNetworkTests.patient)
+        XCTAssertNil(look.header)
+
+        let all = calendar.requests + explorer.requests
+        XCTAssertEqual(all.count, 2)
+        for req in all {
+            XCTAssertEqual(req.header("Accept-Language"), "en")
+            XCTAssertEqual(req.userAgent, OtsNetworkTests.userAgent)
+        }
+    }
+
     // The few words a log line gets for a failure (Windows `OtsHttp.Reason`).
     func testReasons() {
         XCTAssertEqual(OtsHTTP.reason(CancellationError()), "timeout")

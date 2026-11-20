@@ -30,22 +30,30 @@ final class TempDir {
 }
 
 /// Every test run writes history, locks and update checks into a temporary folder, never into the user's own.
-/// Started by the first tempDir() (every test that touches the disk calls it) and by TestMedia.
+/// Started by the first tempDir() (every test that touches the disk calls it), by ProofTestSeams and by TestMedia.
 let testSettingsDir: String = {
     let d = NSTemporaryDirectory() + "offload-tests-\(getpid())"
     try? FileManager.default.createDirectory(atPath: d, withIntermediateDirectories: true)
     setenv("OFFLOAD_SETTINGS_DIR", d, 1)
-    ProofTestSeams.install()
     return d
 }()
 
 /// Plan 11 (Windows `TestEnvironment`): the proof's seams, set once for the whole test run (by the first tempDir() and by
-/// every proof test's setUp). Synthetic block headers (OtsNetworkTests.mine, regtest difficulty) pass the proof-of-work
-/// check of the faked explorers; a real header passes either way, and `hasProofOfWork(limit: mainnetPowLimit)` tests
-/// Bitcoin's own limit. Network: only through `OtsHTTP(protocolClasses: [StubURLProtocol.self])`.
+/// every proof test's setUp). The settings folder first, so the proof's locks (`AppSupport.lockFolder`) are in it; the
+/// store under it (`ProofStore.defaultFolderOverride`); `ProofServiceOptions.default()` with no calendar, no explorer
+/// and URLSession only through the stub (`defaultOverride`). Synthetic block headers (OtsNetworkTests.mine, regtest
+/// difficulty) pass the proof-of-work check of the faked explorers; a real header passes either way, and
+/// `hasProofOfWork(limit: mainnetPowLimit)` tests Bitcoin's own limit. Network: only through
+/// `OtsHTTP(protocolClasses: [StubURLProtocol.self])`.
 enum ProofTestSeams {
     private static let installed: Void = {
+        let settings = testSettingsDir
         BitcoinHeaders.powLimitOverride = OtsNetworkTests.regtestPowLimit
+        ProofStore.defaultFolderOverride = settings + "/proof"
+        ProofServiceOptions.defaultOverride = {
+            ProofServiceOptions(protocolClasses: [StubURLProtocol.self], calendars: [], headerSources: [],
+                                allowedCalendar: { $0.hasPrefix("http://stub-") })
+        }
     }()
 
     static func install() { _ = installed }
@@ -54,7 +62,7 @@ enum ProofTestSeams {
 extension XCTestCase {
     /// A fresh folder, removed after the test.
     func tempDir() -> TempDir {
-        _ = testSettingsDir
+        ProofTestSeams.install()   // starts testSettingsDir first
         let dir = TempDir()
         addTeardownBlock { try? FileManager.default.removeItem(atPath: dir.path) }
         return dir
