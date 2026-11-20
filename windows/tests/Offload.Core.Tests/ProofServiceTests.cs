@@ -1,0 +1,572 @@
+using System.Buffers.Binary;
+using System.Collections.Concurrent;
+using System.Net;
+using System.Security.Cryptography;
+using System.Text;
+using Offload.Core.Proof;
+using Offload.Core.Proof.Ots;
+
+namespace Offload.Core.Tests;
+
+/// The proof queue at work: a fake clock, OpenTimestamps calendars and block explorers faked with LocalHttp (the tests
+/// never touch the network), card folders in %TEMP%.
+public class ProofServiceTests
+{
+    static readonly DateTime T0 = new(2026, 11, 19, 21, 30, 0, DateTimeKind.Utc);
+    const ulong Height = 358391;
+    static readonly DateTime BlockTime = new(2026, 11, 19, 23, 41, 7, DateTimeKind.Utc);
+    static readonly byte[] DeadBeef = [0xde, 0xad, 0xbe, 0xef];
+
+    static Task Reply(HttpListenerContext c, int status, byte[] body)
+    {
+        c.Response.StatusCode = status;
+        c.Response.ContentLength64 = body.Length;
+        c.Response.OutputStream.Write(body);
+        c.Response.Close();
+        return Task.CompletedTask;
+    }
+
+    /// A calendar: POST /digest → commitment → prepend(prefix) → sha256 → Pending(own url) (503 while `Refuse`);
+    /// GET /timestamp/<m> → 404 until `Confirmed`, then m → append(deadbeef) → sha256 → Bitcoin(358391).
+    sealed class Calendar : IDisposable
+    {
+        readonly LocalHttp http;
+        readonly byte[] prefix;
+        public volatile bool Refuse;
+        public volatile bool Confirmed;
+        /// POST /digest answers only once this many have arrived (at most 10 s): two stamps in flight at once.
+        public int Gate;
+        int posts;
+        /// The messages this calendar attested in Bitcoin (what a block's merkle root has to be).
+        public readonly ConcurrentQueue<byte[]> Attested = new();
+
+        public Calendar(int i)
+        {
+            prefix = [.. Enumerable.Range(0, 8).Select(k => (byte)(i * 16 + k))];
+            http = new LocalHttp(Handle);
+        }
+
+        public string Url => http.Url.TrimEnd('/');
+        public int Stamps => http.Requests.Count(r => r.Method == "POST" && r.Path == "/digest");
+        public int Upgrades => http.Requests.Count(r => r.Method == "GET" && r.Path.StartsWith("/timestamp/", StringComparison.Ordinal));
+
+        Task Handle(HttpListenerContext c)
+        {
+            var path = c.Request.Url!.AbsolutePath;
+            if (c.Request.HttpMethod == "POST" && path == "/digest")
+            {
+                if (Refuse) return Reply(c, 503, "Service Unavailable"u8.ToArray());
+                Interlocked.Increment(ref posts);
+                SpinWait.SpinUntil(() => Volatile.Read(ref posts) >= Gate, TimeSpan.FromSeconds(10));
+                var uri = Encoding.ASCII.GetBytes(Url);
+                return Reply(c, 200, [0xf1, (byte)prefix.Length, .. prefix, 0x08,
+                    0x00, .. Convert.FromHexString("83dfe30d2ef90c8e"), (byte)(uri.Length + 1), (byte)uri.Length, .. uri]);
+            }
+            if (c.Request.HttpMethod == "GET" && path.StartsWith("/timestamp/", StringComparison.Ordinal))
+            {
+                if (!Confirmed) return Reply(c, 404, "Pending confirmation in Bitcoin blockchain"u8.ToArray());
+                var m = Convert.FromHexString(path["/timestamp/".Length..]);
+                Attested.Enqueue(SHA256.HashData([.. m, .. DeadBeef]));
+                return Reply(c, 200, [0xf0, 0x04, .. DeadBeef, 0x08, 0x00, .. Convert.FromHexString("0588960d73d71901"), 0x03, 0xf7, 0xef, 0x15]);
+            }
+            return Reply(c, 404, "Not found"u8.ToArray());
+        }
+
+        public void Dispose() => http.Dispose();
+    }
+
+    /// An explorer with the Esplora API whose header of block 358391 has `root()` as its merkle root (asked lazily, when
+    /// the calendars have attested) and BlockTime as its time.
+    sealed class Explorer : IDisposable
+    {
+        readonly LocalHttp http;
+
+        public Explorer(Func<byte[]> root)
+        {
+            http = new LocalHttp(c =>
+            {
+                var header = new byte[80];
+                BinaryPrimitives.WriteUInt32LittleEndian(header, 0x20000000);
+                root().CopyTo(header, 36);
+                BinaryPrimitives.WriteUInt32LittleEndian(header.AsSpan(68), (uint)new DateTimeOffset(BlockTime).ToUnixTimeSeconds());
+                var hash = Convert.ToHexStringLower([.. SHA256.HashData(SHA256.HashData(header)).Reverse()]);
+                var path = c.Request.Url!.AbsolutePath;
+                if (path == $"/block-height/{Height}") return Reply(c, 200, Encoding.ASCII.GetBytes(hash));
+                if (path == $"/block/{hash}/header") return Reply(c, 200, Encoding.ASCII.GetBytes(Convert.ToHexStringLower(header)));
+                return Reply(c, 404, "Block not found"u8.ToArray());
+            });
+        }
+
+        public string Url => http.Url.TrimEnd('/');
+        public void Dispose() => http.Dispose();
+    }
+
+    sealed class Clock
+    {
+        public DateTime Now = T0;
+    }
+
+    sealed class Rig : IDisposable
+    {
+        public readonly TempDir Dir = new();
+        public readonly Calendar A = new(1), B = new(2);
+        public readonly Clock Clock = new();
+        public readonly ConcurrentQueue<string> Log = new();
+        public readonly ProofStore Store;
+        public readonly List<Explorer> Explorers = [];
+
+        public Rig() => Store = new ProofStore(Dir.Sub("store"));
+
+        public Calendar[] Calendars => [A, B];
+
+        public void Confirm()
+        {
+            A.Confirmed = true;
+            B.Confirmed = true;
+        }
+
+        /// Explorers that confirm calendar A's attestation (`honest`) or give a header with another merkle root.
+        public string[] Sources(bool honest = true)
+        {
+            Func<byte[]> root = honest
+                ? () => A.Attested.TryPeek(out var m) ? m : new byte[32]
+                : () => SHA256.HashData("another block"u8);
+            Explorer e1 = new(root), e2 = new(root);
+            Explorers.AddRange([e1, e2]);
+            return [e1.Url, e2.Url];
+        }
+
+        public ProofService Service(string[]? sources = null) => new(Store, new ProofServiceOptions
+        {
+            Handler = new SocketsHttpHandler { UseProxy = false },
+            Now = () => Clock.Now,
+            Calendars = [A.Url, B.Url],
+            Minimum = 2,
+            HeaderSources = sources ?? [],
+            AllowedCalendar = u => u.StartsWith("http://127.0.0.1:", StringComparison.Ordinal),
+            Timeout = TimeSpan.FromSeconds(30),
+            Log = Log.Enqueue,
+        });
+
+        /// A card folder with `manifest` in its _REPORT (null = the folder is not there: a disk not connected).
+        public string Card(string disk, byte[]? manifest)
+        {
+            var card = Path.Combine(Dir.Path, disk, "2026-11-19", "A001");
+            if (manifest != null) WriteManifest(card, manifest);
+            return card;
+        }
+
+        public ProofEntry Add(byte[] manifest, params string[] cards)
+        {
+            var e = new ProofEntry
+            {
+                Id = Guid.NewGuid().ToString("D"),
+                Created = T0,
+                Manifest = "offload_proof.json",
+                Digest = Convert.ToHexStringLower(SHA256.HashData(manifest)),
+                CardName = "A001",
+                Date = "2026-11-19",
+                Generation = 1,
+                CardPaths = [.. cards],
+                VolumeSerials = [.. cards.Select(_ => (string?)null)],
+            };
+            Store.Add(e);
+            return e;
+        }
+
+        public void Dispose()
+        {
+            A.Dispose();
+            B.Dispose();
+            foreach (var e in Explorers) e.Dispose();
+            Dir.Dispose();
+        }
+    }
+
+    static void WriteManifest(string card, byte[] manifest)
+    {
+        Directory.CreateDirectory(Path.Combine(card, "_REPORT"));
+        File.WriteAllBytes(Path.Combine(card, "_REPORT", "offload_proof.json"), manifest);
+    }
+
+    static byte[] Manifest(string seed = "A001") => Encoding.UTF8.GetBytes($"{{\"card\":{{\"name\":\"{seed}\"}},\"format\":\"mmmover-proof\",\"version\":1}}");
+
+    static string OtsPath(string card) => Path.Combine(card, "_REPORT", "offload_proof.json.ots");
+
+    static OtsFile DiskOts(string card) => OtsFile.Parse(File.ReadAllBytes(OtsPath(card)));
+
+    [Fact]
+    public async Task Queued_Stamps_WritesPendingOts_ThenUpgrades_ThenComplete()
+    {
+        using var rig = new Rig();
+        var manifest = Manifest();
+        string c1 = rig.Card("d1", manifest), c2 = rig.Card("d2", manifest);
+        var e = rig.Add(manifest, c1, c2);
+        using var service = rig.Service(rig.Sources());
+        var changed = new ConcurrentQueue<ProofEntry>();
+        service.Changed += changed.Enqueue;
+
+        var first = Assert.Single(await service.RunDue(default));
+
+        Assert.Equal(e.Id, first.Id);
+        Assert.Equal(ProofState.Pending, first.State);
+        Assert.Equal((T0, T0.AddHours(1)), (first.StampedAt, first.NextCheck));
+        Assert.Null(first.LastError);
+        Assert.Equal(["pending", "pending"], first.Written);
+        var stored = rig.Store.ReadOts(e.Id)!;
+        foreach (var card in new[] { c1, c2 })
+        {
+            var ots = DiskOts(card);
+            Assert.Equal(SHA256.HashData(manifest), ots.Digest);
+            Assert.False(ots.IsComplete);
+            Assert.Equal(stored, File.ReadAllBytes(OtsPath(card)));
+        }
+        Assert.Equal(2, OtsFile.Parse(stored).Timestamp.All().Count(p => p.Attestation is PendingAttestation));
+        Assert.All(rig.Calendars, c => Assert.Equal(1, c.Stamps));
+        Assert.Contains(changed, x => x.State == ProofState.Pending && x.Written.All(w => w == "pending"));
+        var pending = OtsFile.Parse(stored);
+
+        // not due before the next check: nothing asked
+        rig.Clock.Now = T0.AddMinutes(30);
+        Assert.Empty(await service.RunDue(default));
+        Assert.All(rig.Calendars, c => Assert.Equal(0, c.Upgrades));
+
+        // an hour later the calendars have it in Bitcoin, two explorers confirm the block
+        rig.Confirm();
+        rig.Clock.Now = T0.AddHours(1);
+        var done = Assert.Single(await service.RunDue(default));
+
+        Assert.Equal(ProofState.Complete, done.State);
+        Assert.Equal((Height, BlockTime), (done.BitcoinHeight, done.BitcoinTime));
+        Assert.Null(done.NextCheck);
+        Assert.Null(done.LastError);
+        Assert.Equal(["complete", "complete"], done.Written);
+        var final = rig.Store.ReadOts(e.Id)!;
+        foreach (var card in new[] { c1, c2 })
+        {
+            var ots = DiskOts(card);
+            Assert.True(ots.IsComplete);
+            Assert.True(ots.Contains(pending));   // replaced by a superset: every old attestation kept
+            Assert.Equal(final, File.ReadAllBytes(OtsPath(card)));
+            Assert.Equal(["offload_proof.json", "offload_proof.json.ots"], Directory.GetFiles(Path.Combine(card, "_REPORT")).Select(Path.GetFileName).Order());
+        }
+        Assert.Equal(ProofState.Complete, rig.Store.Get(e.Id)!.State);
+        Assert.Contains(changed, x => x.State == ProofState.Complete);
+
+        // done: never due again, nothing asked
+        rig.Clock.Now = T0.AddDays(3);
+        Assert.Empty(await service.RunDue(default));
+        Assert.Empty(await service.RunDue(default, force: true));
+        Assert.All(rig.Calendars, c => Assert.Equal(1, c.Stamps));
+
+        // the older (pending) .ots never replaces the complete one on a disk
+        var latest = rig.Store.Get(e.Id)!;
+        Assert.False(service.WriteToDisks(latest, pending));
+        Assert.Equal(final, File.ReadAllBytes(OtsPath(c1)));
+        Assert.Equal(["complete", "complete"], latest.Written);
+    }
+
+    [Fact]
+    public async Task Offline_ThreeDays_ThenOnline_Completes()
+    {
+        using var rig = new Rig();
+        rig.A.Refuse = rig.B.Refuse = true;
+        var manifest = Manifest();
+        string c1 = rig.Card("d1", manifest), c2 = rig.Card("d2", manifest);
+        var e = rig.Add(manifest, c1, c2);
+        using var service = rig.Service();   // no explorer configured: the block is not checked
+
+        int[] minutes = [1, 2, 5, 10, 30, 60];
+        int tries = 0;
+        while (rig.Clock.Now < T0.AddDays(3))
+        {
+            var x = Assert.Single(await service.RunDue(default));
+            tries++;
+            Assert.Equal(ProofState.Queued, x.State);
+            Assert.Equal(tries, x.Tries);
+            Assert.Equal(rig.Clock.Now.AddMinutes(minutes[Math.Min(tries, minutes.Length) - 1]), x.NextCheck);
+            Assert.Equal(ProofService.NextStampTry(tries, rig.Clock.Now), x.NextCheck);
+            Assert.Contains("stamp failed at 2 of 2 calendars", x.LastError);
+            Assert.False(File.Exists(OtsPath(c1)) || File.Exists(OtsPath(c2)));
+            Assert.Null(rig.Store.ReadOts(e.Id));
+            if (tries == 3) Assert.Empty(await service.RunDue(default));   // not due before its next try
+            rig.Clock.Now = x.NextCheck!.Value;
+        }
+        Assert.Equal(5 + (3 * 24 * 60 - 48) / 60 + 1, tries);   // 1+2+5+10+30 minutes, then every hour for 3 days
+        Assert.All(rig.Calendars, c => Assert.Equal(tries, c.Stamps));
+
+        // the network is back
+        rig.A.Refuse = rig.B.Refuse = false;
+        var stampedAt = rig.Clock.Now;
+        var p = Assert.Single(await service.RunDue(default));
+        Assert.Equal(ProofState.Pending, p.State);
+        Assert.Null(p.LastError);
+        Assert.Equal((stampedAt, stampedAt.AddHours(1)), (p.StampedAt, p.NextCheck));
+        Assert.Equal(["pending", "pending"], p.Written);
+        Assert.False(DiskOts(c1).IsComplete);
+
+        rig.Confirm();
+        rig.Clock.Now = stampedAt.AddHours(1);
+        var done = Assert.Single(await service.RunDue(default));
+        Assert.Equal(ProofState.Complete, done.State);
+        Assert.Equal(Height, done.BitcoinHeight);   // from the attestation; no explorer to give the block time
+        Assert.Null(done.BitcoinTime);
+        Assert.Equal(["complete", "complete"], done.Written);
+        Assert.True(DiskOts(c1).IsComplete && DiskOts(c2).IsComplete);
+        Assert.Contains(rig.Log, l => l.Contains("stamp failed at 2 of 2 calendars", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task MissingDisk_WrittenLater()
+    {
+        using var rig = new Rig();
+        var manifest = Manifest();
+        string c1 = rig.Card("d1", manifest), c2 = rig.Card("d2", null);
+        var e = rig.Add(manifest, c1, c2);
+        using var service = rig.Service();
+
+        var p = Assert.Single(await service.RunDue(default));
+        Assert.Equal(["pending", "none"], p.Written);
+        Assert.False(Directory.Exists(c2));   // never creates a card folder
+
+        rig.Confirm();
+        rig.Clock.Now = T0.AddHours(1);
+        var c = Assert.Single(await service.RunDue(default));
+        Assert.Equal(ProofState.Complete, c.State);
+        Assert.Equal(["complete", "none"], c.Written);
+
+        // complete but not on every disk: due at every run, only the disks (no calendar asked)
+        rig.Clock.Now = T0.AddHours(1).AddMinutes(10);
+        Assert.Equal(["complete", "none"], Assert.Single(await service.RunDue(default)).Written);
+        int upgrades = rig.A.Upgrades;
+
+        // the disk is connected again
+        WriteManifest(c2, manifest);
+        rig.Clock.Now = T0.AddHours(2);
+        var all = Assert.Single(await service.RunDue(default));
+        Assert.Equal(["complete", "complete"], all.Written);
+        Assert.True(DiskOts(c2).IsComplete);
+        Assert.Equal(rig.Store.ReadOts(e.Id), File.ReadAllBytes(OtsPath(c2)));
+        Assert.Equal(upgrades, rig.A.Upgrades);
+        Assert.All(rig.Calendars, x => Assert.Equal(1, x.Stamps));
+
+        Assert.Empty(await service.RunDue(default));   // on every disk now: not due
+    }
+
+    // Review focus 1: another disk at the same path later — a card folder there, but its _REPORT has no manifest or
+    // a manifest with other bytes → nothing is written there, ever.
+    [Fact]
+    public async Task OtherDiskAtSamePath_NeverWritten()
+    {
+        using var rig = new Rig();
+        var manifest = Manifest();
+        var other = Manifest("A001 of another day");
+        string c1 = rig.Card("d1", manifest), c2 = rig.Card("d2", other), c3 = rig.Card("d3", null);
+        Directory.CreateDirectory(Path.Combine(c3, "_REPORT"));   // a card folder without any proof
+        var e = rig.Add(manifest, c1, c2, c3);
+        using var service = rig.Service();
+
+        Assert.Equal(["pending", "none", "none"], Assert.Single(await service.RunDue(default)).Written);
+        rig.Confirm();
+        rig.Clock.Now = T0.AddHours(1);
+        var done = Assert.Single(await service.RunDue(default));
+
+        Assert.Equal(ProofState.Complete, done.State);
+        Assert.Equal(["complete", "none", "none"], done.Written);
+        Assert.Equal(["offload_proof.json"], Directory.GetFiles(Path.Combine(c2, "_REPORT")).Select(Path.GetFileName));
+        Assert.Equal(other, File.ReadAllBytes(Path.Combine(c2, "_REPORT", "offload_proof.json")));
+        Assert.Empty(Directory.GetFiles(Path.Combine(c3, "_REPORT")));
+
+        // asked directly as well
+        Assert.False(service.WriteToDisks(rig.Store.Get(e.Id)!, OtsFile.Parse(rig.Store.ReadOts(e.Id)!)));
+        Assert.False(File.Exists(OtsPath(c2)) || File.Exists(OtsPath(c3)));
+    }
+
+    [Fact]
+    public async Task ForeignOts_NotReplaced()
+    {
+        using var rig = new Rig();
+        var manifest = Manifest();
+        string c1 = rig.Card("d1", manifest), c2 = rig.Card("d2", manifest), c3 = rig.Card("d3", manifest), c4 = rig.Card("d4", manifest);
+        // c1: a timestamp of another file; c2: not a timestamp; c3: another timestamp of this manifest (neither contains
+        // the other) — each stays byte for byte.
+        var otherFile = OtsFile.For(SHA256.HashData("another file"u8));
+        otherFile.Timestamp.Add(OtsOp.Sha256).Add(new PendingAttestation("https://alice.btc.calendar.opentimestamps.org"));
+        var sameDigest = OtsFile.For(SHA256.HashData(manifest));
+        sameDigest.Timestamp.Add(OtsOp.Append([1, 2, 3])).Add(OtsOp.Sha256).Add(new PendingAttestation("https://bob.btc.calendar.opentimestamps.org"));
+        byte[] foreign1 = otherFile.ToBytes(), foreign2 = "not a timestamp"u8.ToArray(), foreign3 = sameDigest.ToBytes();
+        File.WriteAllBytes(OtsPath(c1), foreign1);
+        File.WriteAllBytes(OtsPath(c2), foreign2);
+        File.WriteAllBytes(OtsPath(c3), foreign3);
+        rig.Add(manifest, c1, c2, c3, c4);
+        using var service = rig.Service();
+
+        var p = Assert.Single(await service.RunDue(default));
+        Assert.Equal(["none", "none", "pending", "pending"], p.Written);   // c3 holds a (pending) proof of this manifest
+        rig.Confirm();
+        rig.Clock.Now = T0.AddHours(1);
+        var done = Assert.Single(await service.RunDue(default));
+
+        Assert.Equal(ProofState.Complete, done.State);
+        Assert.Equal(["none", "none", "pending", "complete"], done.Written);
+        Assert.Equal(foreign1, File.ReadAllBytes(OtsPath(c1)));
+        Assert.Equal(foreign2, File.ReadAllBytes(OtsPath(c2)));
+        Assert.Equal(foreign3, File.ReadAllBytes(OtsPath(c3)));
+        Assert.True(DiskOts(c4).IsComplete);
+        Assert.Contains(rig.Log, l => l.Contains(OtsPath(c1), StringComparison.Ordinal) && l.Contains("left as it is", StringComparison.Ordinal));
+        Assert.Contains(rig.Log, l => l.Contains(OtsPath(c2), StringComparison.Ordinal) && l.Contains("left as it is", StringComparison.Ordinal));
+        Assert.Contains(rig.Log, l => l.Contains(OtsPath(c3), StringComparison.Ordinal) && l.Contains("left as it is", StringComparison.Ordinal));
+    }
+
+    // A crash (or a failing store) between the calendars' answer and the save: nothing half-done stays, the next run
+    // stamps again — whether the .ots or the entry failed to save.
+    [Theory]
+    [InlineData(".ots")]
+    [InlineData(".json")]
+    public async Task CrashBetweenStampAndSave_RestampsNextRun(string failing)
+    {
+        using var rig = new Rig();
+        var manifest = Manifest();
+        string c1 = rig.Card("d1", manifest), c2 = rig.Card("d2", manifest);
+        var e = rig.Add(manifest, c1, c2);
+        int once = 0;
+        rig.Store.BeforeWrite = path =>
+        {
+            if (path.EndsWith(failing, StringComparison.Ordinal) && Interlocked.Exchange(ref once, 1) == 0)
+                throw new IOException("simulated crash while saving");
+        };
+        using var service = rig.Service();
+        service.Changed += _ => throw new InvalidOperationException("a broken listener");   // never breaks the run
+
+        var x = Assert.Single(await service.RunDue(default));
+
+        Assert.Equal(ProofState.Queued, x.State);
+        Assert.Contains("simulated crash while saving", x.LastError);
+        Assert.False(File.Exists(OtsPath(c1)) || File.Exists(OtsPath(c2)));
+        Assert.Contains(rig.Log, l => l.Contains("simulated crash while saving", StringComparison.Ordinal));
+        Assert.All(rig.Calendars, c => Assert.Equal(1, c.Stamps));
+
+        var p = Assert.Single(await service.RunDue(default));   // still due: stamped again
+
+        Assert.Equal(ProofState.Pending, p.State);
+        Assert.Null(p.LastError);
+        Assert.Equal(["pending", "pending"], p.Written);
+        Assert.All(rig.Calendars, c => Assert.Equal(2, c.Stamps));
+        var stored = rig.Store.ReadOts(e.Id)!;
+        Assert.Equal(stored, File.ReadAllBytes(OtsPath(c1)));
+        Assert.Equal(stored, File.ReadAllBytes(OtsPath(c2)));
+        // the .ots saved before the entry failed is merged, not lost: both stamps' branches
+        int branches = failing == ".json" ? 2 : 1;
+        Assert.Equal(2 * branches, OtsFile.Parse(stored).Timestamp.All().Count(a => a.Attestation is PendingAttestation));
+    }
+
+    // Review focus 5: the app and the CLI work the same entries at once — no lost update, every disk ends with the
+    // store's complete .ots, which keeps everything either of them got.
+    [Fact]
+    public async Task TwoServicesOneStore_NoLostUpdate()
+    {
+        using var rig = new Rig();
+        var entries = new List<(ProofEntry Entry, string[] Cards)>();
+        for (int i = 0; i < 3; i++)
+        {
+            var manifest = Manifest($"A00{i}");
+            string[] cards = [rig.Card($"d{i}a", manifest), rig.Card($"d{i}b", manifest)];
+            entries.Add((rig.Add(manifest, cards), cards));
+        }
+        using var app = rig.Service();
+        using var cli = rig.Service();
+        rig.A.Gate = rig.B.Gate = 2;   // both stamp the first entry at once
+
+        await Task.WhenAll(app.RunDue(default), cli.RunDue(default));
+
+        var pendings = new Dictionary<string, OtsFile>();
+        foreach (var (entry, cards) in entries)
+        {
+            var x = rig.Store.Get(entry.Id)!;
+            Assert.Equal(ProofState.Pending, x.State);
+            Assert.Equal(["pending", "pending"], x.Written);
+            var stored = rig.Store.ReadOts(entry.Id)!;
+            foreach (var card in cards) Assert.Equal(stored, File.ReadAllBytes(OtsPath(card)));
+            pendings[entry.Id] = OtsFile.Parse(stored);
+        }
+        // nothing a calendar handed out is lost: one pending attestation per stamp request, the double stamp included
+        Assert.All(rig.Calendars, c => Assert.InRange(c.Stamps, 4, 6));
+        Assert.Equal(rig.A.Stamps + rig.B.Stamps, pendings.Values.Sum(f => f.Timestamp.All().Count(p => p.Attestation is PendingAttestation)));
+
+        rig.Confirm();
+        rig.Clock.Now = T0.AddHours(1);
+        await Task.WhenAll(app.RunDue(default), cli.RunDue(default));
+
+        foreach (var (entry, cards) in entries)
+        {
+            var x = rig.Store.Get(entry.Id)!;
+            Assert.Equal(ProofState.Complete, x.State);
+            Assert.Equal(Height, x.BitcoinHeight);
+            Assert.Equal(["complete", "complete"], x.Written);
+            var stored = rig.Store.ReadOts(entry.Id)!;
+            var ots = OtsFile.Parse(stored);
+            Assert.True(ots.IsComplete);
+            Assert.True(ots.Contains(pendings[entry.Id]));
+            foreach (var card in cards) Assert.Equal(stored, File.ReadAllBytes(OtsPath(card)));
+        }
+        Assert.All(rig.Calendars, c => Assert.InRange(c.Stamps, 4, 6));   // each entry stamped once or twice, never more
+        Assert.Empty(await app.RunDue(default));
+        Assert.Empty(await cli.RunDue(default));
+    }
+
+    // Ruling R8: a Bitcoin attestation the block explorers contradict never makes a proof complete.
+    [Fact]
+    public async Task BitcoinMismatch_StaysPending()
+    {
+        using var rig = new Rig();
+        var manifest = Manifest();
+        string c1 = rig.Card("d1", manifest), c2 = rig.Card("d2", manifest);
+        var e = rig.Add(manifest, c1, c2);
+        using var service = rig.Service(rig.Sources(honest: false));
+
+        Assert.Equal(ProofState.Pending, Assert.Single(await service.RunDue(default)).State);
+        rig.Confirm();
+        rig.Clock.Now = T0.AddHours(1);
+        var x = Assert.Single(await service.RunDue(default));
+
+        Assert.Equal(ProofState.Pending, x.State);
+        Assert.Equal($"a calendar returned a Bitcoin attestation that does not match block {Height}", x.LastError);
+        Assert.Equal(ProofService.NextUpgrade(T0, rig.Clock.Now), x.NextCheck);
+        Assert.Null(x.BitcoinHeight);
+        Assert.Equal(["pending", "pending"], x.Written);
+        Assert.False(DiskOts(c1).IsComplete);   // the disks keep the pending proof
+        Assert.False(DiskOts(c2).IsComplete);
+        Assert.Contains(rig.Log, l => l.Contains("does not match block", StringComparison.Ordinal));
+
+        rig.Clock.Now = x.NextCheck!.Value;   // asked again on schedule: still not complete
+        Assert.Equal(ProofState.Pending, Assert.Single(await service.RunDue(default)).State);
+    }
+
+    [Fact]
+    public async Task Force_And_Only()
+    {
+        using var rig = new Rig();
+        var m1 = Manifest("A001");
+        var m2 = Manifest("A002");
+        var e1 = rig.Add(m1, rig.Card("d1", m1));
+        var e2 = rig.Add(m2, rig.Card("d2", m2));
+        using var service = rig.Service();
+
+        Assert.Equal([e1.Id], (await service.RunDue(default, only: [e1.Id])).Select(x => x.Id));
+        Assert.Equal(ProofState.Queued, rig.Store.Get(e2.Id)!.State);
+        var second = Assert.Single(await service.RunDue(default));   // e1 is pending, not due for an hour
+        Assert.Equal((e2.Id, ProofState.Pending), (second.Id, second.State));
+
+        // pending, next check in an hour: `force` asks now, `only` limits it
+        var upgrades = rig.A.Upgrades;
+        Assert.Empty(await service.RunDue(default));
+        var forced = Assert.Single(await service.RunDue(default, only: [e2.Id], force: true));
+        Assert.Equal(e2.Id, forced.Id);
+        Assert.Equal(upgrades + 1, rig.A.Upgrades);
+
+        // cancelled before it starts: nothing, no exception
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+        Assert.Empty(await service.RunDue(cts.Token, force: true));
+    }
+}

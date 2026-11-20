@@ -1,0 +1,462 @@
+using System.Security.Cryptography;
+using System.Text.RegularExpressions;
+using Offload.Core.Proof.Ots;
+
+namespace Offload.Core.Proof;
+
+/// What ProofService talks to and when. `Default()` is the real network (tests: TestEnvironment makes it offline).
+public sealed class ProofServiceOptions
+{
+    /// The HTTP handler (tests: LocalHttp without a proxy); null = a SocketsHttpHandler of the service's own.
+    public HttpMessageHandler? Handler { get; set; }
+    public Func<DateTime> Now { get; set; } = () => DateTime.UtcNow;
+    public IReadOnlyList<string> Calendars { get; set; } = OtsCalendar.Aggregators;
+    /// Calendars that must accept a stamp (design point 7: 2 of 4).
+    public int Minimum { get; set; } = 2;
+    public IReadOnlyList<string> HeaderSources { get; set; } = BitcoinHeaders.Sources;
+    /// Which pending attestation uris an upgrade may ask (the reference client's whitelist).
+    public Func<string, bool> AllowedCalendar { get; set; } = OtsCalendar.Allowed;
+    /// Each calendar or explorer request.
+    public TimeSpan Timeout { get; set; } = TimeSpan.FromSeconds(10);
+    public Action<string>? Log { get; set; }
+
+    internal static Func<ProofServiceOptions>? DefaultOverride { get; set; }
+
+    public static ProofServiceOptions Default() => DefaultOverride?.Invoke() ?? new ProofServiceOptions();
+}
+
+/// Works the proof queue (spec „Fronta a stavy“): stamps queued entries at the calendars (again after 1, 2, 5, 10, 30,
+/// then every 60 minutes), upgrades pending ones (every hour the first 24 h after the stamp, then daily) until a
+/// Bitcoin attestation the block explorers do not contradict makes them complete, and writes the latest .ots into
+/// `_REPORT` of every card folder that holds the manifest — also of a disk connected again later. The network is never
+/// asked under the store's mutex; after it the entry is re-read and the timestamps merged, so the app and the CLI may
+/// work the same entries at once. RunDue never throws: every problem is a log line and the entry's `lastError`.
+public sealed partial class ProofService : IDisposable
+{
+    /// Held while the .ots files on the disks are compared and written (and their `written` saved), so two services
+    /// never interleave there: the later one sees what the earlier wrote.
+    public const string DiskLockName = @"Local\mmMover-proof-disks";
+
+    static readonly TimeSpan DiskLockTimeout = TimeSpan.FromSeconds(30);
+    static readonly int[] StampDelaysMinutes = [1, 2, 5, 10, 30, 60];
+
+    readonly ProofStore store;
+    readonly ProofServiceOptions options;
+    readonly HttpClient http;
+    readonly SemaphoreSlim running = new(1, 1);
+
+    public ProofService(ProofStore store, ProofServiceOptions options)
+    {
+        this.store = store;
+        this.options = options;
+        http = options.Handler != null ? new HttpClient(options.Handler, disposeHandler: false) : new HttpClient(new SocketsHttpHandler());
+        http.Timeout = System.Threading.Timeout.InfiniteTimeSpan;   // each request has options.Timeout
+    }
+
+    /// After every saved change of an entry (on the thread of the run).
+    public event Action<ProofEntry>? Changed;
+
+    /// After `tries` failed stamps: 1, 2, 5, 10, 30 minutes, then every 60.
+    public static DateTime NextStampTry(int tries, DateTime now) =>
+        now.AddMinutes(StampDelaysMinutes[Math.Clamp(tries, 1, StampDelaysMinutes.Length) - 1]);
+
+    /// Every hour until 24 h after the stamp, then every 24 h.
+    public static DateTime NextUpgrade(DateTime stampedAt, DateTime now) =>
+        now - stampedAt < TimeSpan.FromHours(24) ? now.AddHours(1) : now.AddHours(24);
+
+    static bool IsDue(ProofEntry e, DateTime now, bool force) => e.State switch
+    {
+        ProofState.Queued or ProofState.Pending => force || e.NextCheck is not { } next || next <= now,
+        ProofState.Complete => e.Written.Any(w => w != ProofEntry.WrittenComplete),
+        _ => false,
+    };
+
+    /// Works every due entry (`only`: just these ids; `force`: queued and pending ones now, whatever their next
+    /// check): queued → stamp, pending → upgrade, complete but not on every disk → the disks. Returns the entries it
+    /// worked, as they are now. One run at a time per service; a cancelled run stops quietly. Never throws.
+    public async Task<IReadOnlyList<ProofEntry>> RunDue(CancellationToken ct, IReadOnlyCollection<string>? only = null, bool force = false)
+    {
+        var worked = new List<ProofEntry>();
+        try
+        {
+            await running.WaitAsync(ct).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            return worked;
+        }
+        try
+        {
+            var now = options.Now();
+            var due = store.All().Where(e => (only == null || only.Contains(e.Id)) && IsDue(e, now, force)).Select(e => e.Id).ToList();
+            foreach (var id in due)
+            {
+                if (ct.IsCancellationRequested) break;
+                // Fresh: another service may have worked it since the list was read.
+                if (store.Get(id) is not { } e || !IsDue(e, options.Now(), force)) continue;
+                try
+                {
+                    await Work(e, ct).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (ct.IsCancellationRequested)
+                {
+                    break;
+                }
+                catch (Exception x)
+                {
+                    Log($"{Who(e)}: {x.Message}");
+                    SaveError(id, x.Message);
+                }
+                if (store.Get(id) is { } latest) worked.Add(latest);
+            }
+        }
+        catch (Exception x)
+        {
+            Log($"proof: {x.Message}");
+        }
+        finally
+        {
+            running.Release();
+        }
+        return worked;
+    }
+
+    async Task Work(ProofEntry e, CancellationToken ct)
+    {
+        if (!TryDigest(e, out var digest) || !ValidManifestName(e.Manifest))
+        {
+            const string why = "the entry is damaged (manifest name or digest) — the proof cannot be finished";
+            Log($"{Who(e)}: {why}");
+            Saved(store.Update(e.Id, cur => { cur.State = ProofState.Failed; cur.NextCheck = null; cur.LastError = why; return cur; }));
+            return;
+        }
+        switch (e.State)
+        {
+            case ProofState.Queued: await Stamp(e, digest, ct).ConfigureAwait(false); break;
+            case ProofState.Pending: await Upgrade(e, digest, ct).ConfigureAwait(false); break;
+            case ProofState.Complete: Disks(e.Id); break;
+        }
+    }
+
+    async Task Stamp(ProofEntry e, byte[] digest, CancellationToken ct)
+    {
+        var r = await OtsCalendar.Stamp(http, digest, options.Calendars, options.Minimum, options.Timeout, ct).ConfigureAwait(false);
+        var now = options.Now();
+        if (r.File is not { } stamped)
+        {
+            var why = $"stamp failed at {r.Failed.Count} of {options.Calendars.Count} calendars ({r.Accepted.Count} accepted, {Math.Max(1, options.Minimum)} needed)";
+            var failed = Saved(store.Update(e.Id, cur =>
+            {
+                if (cur.State != ProofState.Queued) return null;   // another service stamped it meanwhile
+                cur.Tries++;
+                cur.NextCheck = NextStampTry(cur.Tries, now);
+                cur.LastError = why;
+                return cur;
+            }));
+            Log($"{Who(e)}: {why}" + (failed?.NextCheck is { } next ? $" — next try {next:yyyy-MM-dd HH:mm} UTC" : ""));
+            return;
+        }
+
+        var saved = Saved(store.Update(e.Id, cur =>
+        {
+            if (cur.State is not (ProofState.Queued or ProofState.Pending)) return null;
+            var merged = Merge(store.ReadOts(cur.Id), digest, stamped);   // a stamp another service saved meanwhile is kept
+            store.WriteOts(cur.Id, merged.ToBytes());
+            if (cur.State == ProofState.Queued)
+            {
+                cur.State = ProofState.Pending;
+                cur.StampedAt = now;
+                cur.NextCheck = NextUpgrade(now, now);
+            }
+            cur.LastError = null;
+            return cur;
+        }));
+        if (saved == null) return;
+        Log($"{Who(e)}: anchoring requested at {r.Accepted.Count} of {options.Calendars.Count} calendars — Bitcoin confirms in a few hours");
+        Disks(e.Id);
+    }
+
+    async Task Upgrade(ProofEntry e, byte[] digest, CancellationToken ct)
+    {
+        if (Parse(store.ReadOts(e.Id), digest) is not { } ots)
+        {
+            const string why = "the stored timestamp is missing or damaged — stamping again";
+            Log($"{Who(e)}: {why}");
+            Saved(store.Update(e.Id, cur =>
+            {
+                if (cur.State != ProofState.Pending || Parse(store.ReadOts(cur.Id), digest) != null) return null;
+                cur.State = ProofState.Queued;
+                cur.StampedAt = null;
+                cur.NextCheck = null;
+                cur.LastError = why;
+                return cur;
+            }));
+            return;
+        }
+
+        int added = await OtsCalendar.Upgrade(http, ots, options.AllowedCalendar, options.Timeout, ct).ConfigureAwait(false);
+        var check = ots.IsComplete ? await BitcoinHeaders.Verify(http, ots, options.HeaderSources, options.Timeout, ct).ConfigureAwait(false) : null;
+        var now = options.Now();
+
+        var saved = Saved(store.Update(e.Id, cur =>
+        {
+            if (cur.State is not (ProofState.Pending or ProofState.Complete)) return null;
+            var stored = store.ReadOts(cur.Id);
+            var merged = Merge(stored, digest, ots);
+            var bytes = merged.ToBytes();
+            if (stored == null || !stored.AsSpan().SequenceEqual(bytes)) store.WriteOts(cur.Id, bytes);
+            if (cur.State == ProofState.Complete) return cur;   // another service finished it meanwhile
+            switch (check?.Outcome)
+            {
+                case BitcoinOutcome.Verified:
+                    Complete(cur, check.Height, check.Time);
+                    break;
+                case BitcoinOutcome.NotChecked:
+                    // No explorer answered (or they disagree): the attestation stands, the block time stays unknown.
+                    Complete(cur, EarliestBitcoin(merged), null);
+                    break;
+                case BitcoinOutcome.Mismatch:
+                    // A calendar must not make a proof complete with an attestation the block contradicts (ruling R8).
+                    cur.NextCheck = NextUpgrade(cur.StampedAt ?? now, now);
+                    cur.LastError = $"a calendar returned a Bitcoin attestation that does not match block {check.Height}";
+                    break;
+                default:
+                    cur.NextCheck = NextUpgrade(cur.StampedAt ?? now, now);
+                    cur.LastError = null;
+                    break;
+            }
+            return cur;
+        }));
+        if (saved == null) return;
+        if (check?.Outcome == BitcoinOutcome.Mismatch)
+        {
+            Log($"{Who(e)}: {saved.LastError} ({check.Problem}) — not complete, asked again {saved.NextCheck:yyyy-MM-dd HH:mm} UTC");
+            return;   // the disks keep what they have
+        }
+        if (saved.State == ProofState.Complete && check != null)
+            Log($"{Who(e)}: anchored in Bitcoin block {saved.BitcoinHeight}"
+                + (check.Outcome == BitcoinOutcome.Verified ? $" ({string.Join(", ", check.Sources)} agree)" : $" (block not checked: {check.Problem})"));
+        else if (saved.State == ProofState.Pending)
+            Log($"{Who(e)}: upgrade: " + (added == 0 ? "no new attestation yet" : $"{added} calendar(s) answered, not in Bitcoin yet")
+                + $" — asked again {saved.NextCheck:yyyy-MM-dd HH:mm} UTC");
+        Disks(e.Id);
+    }
+
+    static void Complete(ProofEntry e, ulong? height, DateTime? time)
+    {
+        e.State = ProofState.Complete;
+        e.BitcoinHeight = height;
+        e.BitcoinTime = time;
+        e.NextCheck = null;
+        e.LastError = null;
+    }
+
+    static ulong? EarliestBitcoin(OtsFile f) =>
+        f.Timestamp.All().Select(p => p.Attestation).OfType<BitcoinAttestation>().Select(b => (ulong?)b.Height).Min();
+
+    /// The stored timestamp (when it reads and has this digest) with `got` merged in; else `got`.
+    static OtsFile Merge(byte[]? stored, byte[] digest, OtsFile got)
+    {
+        if (Parse(stored, digest) is not { } f) return got;
+        f.Timestamp.Merge(got.Timestamp);
+        return f;
+    }
+
+    static OtsFile? Parse(byte[]? bytes, byte[] digest)
+    {
+        if (bytes == null) return null;
+        try
+        {
+            var f = OtsFile.Parse(bytes);
+            return f.Digest.AsSpan().SequenceEqual(digest) ? f : null;
+        }
+        catch (FormatException)
+        {
+            return null;
+        }
+    }
+
+    /// The disk step of an entry: the stored .ots onto every card folder (WriteToDisks) and `written` saved, under
+    /// the disk lock.
+    void Disks(string id)
+    {
+        ProofEntry? saved;
+        using (var held = NamedLock.Acquire(DiskLockName, DiskLockTimeout))
+        {
+            if (held == null)
+            {
+                Log($"proof {id}: another mmMover is writing proofs onto the disks — tried again at the next run");
+                return;
+            }
+            if (store.Get(id) is not { } e || !TryDigest(e, out var digest) || Parse(store.ReadOts(id), digest) is not { } ots) return;
+            if (!WriteToDisks(e, ots)) return;
+            var written = e.Written;
+            saved = store.Update(id, cur =>
+            {
+                if (cur.Written.SequenceEqual(written)) return null;
+                cur.Written = [.. written];
+                return cur;
+            });
+        }
+        Saved(saved);
+    }
+
+    /// Writes `ots` as `<card>/_REPORT/<manifest>.ots` of every card path of `e` — only where `_REPORT/<manifest>`
+    /// is there with the entry's SHA-256 (another disk at the same path never gets it). No .ots yet → a new file; one
+    /// with the same digest that `ots` contains and extends → replaced; one that contains `ots` → kept; anything else
+    /// (another digest, not a timestamp, a different tree) → kept as it is and logged. `e.Written[d]` = what the disk
+    /// now holds (a skipped path keeps its value). Never throws; true when `e.Written` changed.
+    public bool WriteToDisks(ProofEntry e, OtsFile ots)
+    {
+        try
+        {
+            e.Normalise();
+            if (!TryDigest(e, out var digest) || !ValidManifestName(e.Manifest) || !ots.Digest.AsSpan().SequenceEqual(digest)) return false;
+            var bytes = ots.ToBytes();
+            using var held = NamedLock.Acquire(DiskLockName, DiskLockTimeout);
+            if (held == null)
+            {
+                Log($"{Who(e)}: another mmMover is writing proofs onto the disks — tried again at the next run");
+                return false;
+            }
+            bool changed = false;
+            for (int d = 0; d < e.CardPaths.Count; d++)
+            {
+                if (WriteToDisk(e, e.CardPaths[d], digest, ots, bytes) is { } now && now != e.Written[d])
+                {
+                    e.Written[d] = now;
+                    changed = true;
+                }
+            }
+            return changed;
+        }
+        catch (Exception x)
+        {
+            Log($"{Who(e)}: {x.Message}");
+            return false;
+        }
+    }
+
+    /// What card folder `card` holds after the write (WrittenNone/Pending/Complete); null when it is skipped (not
+    /// there, another card folder, a disk error).
+    string? WriteToDisk(ProofEntry e, string card, byte[] digest, OtsFile ots, byte[] bytes)
+    {
+        try
+        {
+            if (!Path.IsPathFullyQualified(card)) return null;
+            var report = Path.Combine(card, Layout.ReportDirName);
+            var manifest = Path.Combine(report, e.Manifest);
+            if (!File.Exists(manifest) || !Sha256Of(manifest).AsSpan().SequenceEqual(digest)) return null;
+
+            var path = manifest + ".ots";
+            if (!File.Exists(path))
+            {
+                NativeIO.WriteFileNew(path, bytes);
+                Log($"{Who(e)}: {(ots.IsComplete ? "complete" : "pending")} timestamp written to {path}");
+                return State(ots);
+            }
+            OtsFile old;
+            try
+            {
+                if (new FileInfo(path).Length > MaxOtsBytes) throw new FormatException($"larger than {MaxOtsBytes / (1024 * 1024)} MB");
+                old = OtsFile.Parse(File.ReadAllBytes(path));
+            }
+            catch (FormatException x)
+            {
+                Log($"{Who(e)}: {path} is not a timestamp ({x.Message}) — left as it is");
+                return ProofEntry.WrittenNone;
+            }
+            if (!old.Digest.AsSpan().SequenceEqual(digest))
+            {
+                Log($"{Who(e)}: {path} is a timestamp of another file — left as it is");
+                return ProofEntry.WrittenNone;
+            }
+            if (old.Contains(ots)) return State(old);
+            if (ots.Contains(old))
+            {
+                NativeIO.WriteFileReplacing(path, bytes);
+                Log($"{Who(e)}: {(ots.IsComplete ? "complete" : "more complete")} timestamp written to {path}");
+                return State(ots);
+            }
+            Log($"{Who(e)}: {path} has attestations this proof does not have — left as it is");
+            return State(old);
+        }
+        catch (Exception x) when (x is IOException or IOError or UnauthorizedAccessException)
+        {
+            Log($"{Who(e)}: {card}: {x.Message}");
+            return null;
+        }
+    }
+
+    /// A real .ots is a few kB; a bigger file under that name is not read (it is not ours).
+    const long MaxOtsBytes = 4 * 1024 * 1024;
+
+    static string State(OtsFile f) => f.IsComplete ? ProofEntry.WrittenComplete : ProofEntry.WrittenPending;
+
+    static byte[] Sha256Of(string path)
+    {
+        using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+        return SHA256.HashData(fs);
+    }
+
+    [GeneratedRegex(@"\Aoffload_proof(_[0-9]{4,9})?\.json\z")]
+    private static partial Regex ManifestName();
+
+    /// `offload_proof.json` / `offload_proof_NNNN.json` — a file name, never a path (the store is hand-editable).
+    static bool ValidManifestName(string name) => ManifestName().IsMatch(name);
+
+    static bool TryDigest(ProofEntry e, out byte[] digest)
+    {
+        digest = [];
+        if (e.Digest is not { Length: 64 } hex || !hex.All(Uri.IsHexDigit)) return false;
+        digest = Convert.FromHexString(hex);
+        return true;
+    }
+
+    static string Who(ProofEntry e) => $"proof {e.CardName} {e.Date}".TrimEnd() + (e.Generation > 1 ? $" (generation {e.Generation})" : "");
+
+    void SaveError(string id, string why)
+    {
+        try
+        {
+            Saved(store.Update(id, cur => { cur.LastError = why; return cur; }));
+        }
+        catch (Exception x)
+        {
+            Log($"proof {id}: the error could not be saved either: {x.Message}");
+        }
+    }
+
+    /// Raises Changed for a saved entry (a listener that throws never breaks the run).
+    ProofEntry? Saved(ProofEntry? e)
+    {
+        if (e == null) return null;
+        try
+        {
+            Changed?.Invoke(e);
+        }
+        catch (Exception x)
+        {
+            Log($"proof: a listener failed: {x.Message}");
+        }
+        return e;
+    }
+
+    void Log(string line)
+    {
+        try
+        {
+            options.Log?.Invoke(line);
+        }
+        catch (Exception)
+        {
+            // logging never breaks the queue
+        }
+    }
+
+    public void Dispose()
+    {
+        http.Dispose();
+        running.Dispose();
+    }
+}

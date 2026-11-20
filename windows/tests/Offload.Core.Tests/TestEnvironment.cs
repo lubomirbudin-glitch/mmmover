@@ -1,5 +1,6 @@
 using System.Runtime.CompilerServices;
 using Offload.Core.History;
+using Offload.Core.Proof;
 
 namespace Offload.Core.Tests;
 
@@ -34,6 +35,11 @@ static class TestEnvironment
         Environment.SetEnvironmentVariable("OFFLOAD_SETTINGS_DIR", appData);
         // Task 2026-10-09: the local report copies of CLI and settings-made jobs go to %TEMP%, never the real Documents.
         Offload.Core.Outputs.LocalReports.DocumentsOverride = Path.Combine(HistoryRoot, "history-" + Environment.ProcessId, "Documents");
+        // Plan 11 (Offload Proof): the proof queue lives in %TEMP% too, and the default service options are offline — no
+        // calendar, no block explorer, no calendar allowed for an upgrade — so a job that seals a proof never touches the
+        // network; a test that wants calendars brings its own (LocalHttp).
+        ProofStore.DefaultFolderOverride = Path.Combine(HistoryRoot, "history-" + Environment.ProcessId, "proof");
+        ProofServiceOptions.DefaultOverride = () => new ProofServiceOptions { Calendars = [], HeaderSources = [], AllowedCalendar = _ => false };
     }
 #pragma warning restore CA2255
 }
@@ -49,4 +55,14 @@ public class TestEnvironmentTests
         Assert.False(folder.StartsWith(appData, StringComparison.OrdinalIgnoreCase));
     }
 
+    [Fact]
+    public void ProofSeams_TempFolder_Offline()
+    {
+        Assert.Equal(Path.Combine(TestEnvironment.HistoryRoot, "history-" + Environment.ProcessId, "proof"), ProofStore.DefaultFolder);
+        var o = ProofServiceOptions.Default();
+        Assert.Empty(o.Calendars);
+        Assert.Empty(o.HeaderSources);
+        Assert.False(o.AllowedCalendar("https://alice.btc.calendar.opentimestamps.org"));
+        Assert.Null(o.Handler);
+    }
 }
