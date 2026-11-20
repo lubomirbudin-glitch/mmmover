@@ -12,7 +12,8 @@ public sealed class OffloadOptions
     /// earlier backup's instead (OffloadPlan.Hashes).
     public HashKind Hashes { get; set; } = HashKind.Xxh64;
     /// Plan 11 (Offload Proof): a full copy, an append and a resume also compute SHA-256 of every file in the card read
-    /// (OffloadPlan.Hashes gets HashKind.Sha256) — never a repair, never the read-back. Off: no SHA-256 at all.
+    /// (OffloadPlan.Hashes gets HashKind.Sha256) — a repair only when the backup it repairs had it, never the read-back.
+    /// Off: no SHA-256 at all, whatever an earlier backup had.
     public bool Proof { get; set; }
     /// Files at least this large are flushed individually; the rest are flushed once at the end.
     public long FullSyncThreshold { get; set; } = 256L << 20;

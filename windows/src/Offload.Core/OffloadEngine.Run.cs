@@ -324,11 +324,11 @@ public sealed partial class OffloadEngine
         {
             var expected = plan.Expected![i];
             // MD5 of a backup whose MD5 failed: the card's, when its xxh64 is the recorded one (SHA-256 of a backup made with
-            // the proof, plan 11, the same way).
+            // the proof, plan 11, the same way — only while this repair hashes it: the proof off records none).
             bool same = hashes[i].Xxh64 == expected.Xxh64;
             recorded[i] = expected.Xxh64 == null ? hashes[i]
                 : new FileHashes(expected.Xxh64, expected.Md5 ?? (same ? hashes[i].Md5 : null), expected.Xxh128 ?? (same ? hashes[i].Xxh128 : null),
-                    expected.Sha256 ?? (same ? hashes[i].Sha256 : null));
+                    plan.Hashes.HasFlag(HashKind.Sha256) ? expected.Sha256 ?? (same ? hashes[i].Sha256 : null) : null);
             if (sourceErrors[i] == null && CardDiffers(expected, hashes[i]) is string differs)
             {
                 sourceErrors[i] = differs;

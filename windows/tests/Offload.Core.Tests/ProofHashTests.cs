@@ -248,30 +248,112 @@ public class ProofHashTests
         }
     }
 
-    // A repair of a backup made with the proof keeps its hashes, SHA-256 among them: the repaired file has it again.
-    [Fact]
-    public void Repair_OfABackupWithProof_KeepsSha256()
+    /// A full copy made with the proof onto d1 and d2 (card A001, 2026-10-07); `mismatch`: A001C002.mov is changed on d2
+    /// before the read-back, so it fails there (as RepairFixtures.Mismatch). Returns the card file's bytes too.
+    static (string Card, IReadOnlyList<string> CardPaths, byte[] Bad) CopiedWithProof(TempDir dir, bool mismatch)
     {
-        using var dir = new TempDir();
         var card = dir.Sub("A001");
         TestFs.WriteRandom(Path.Combine(card, "CLIP", "A001C001.mov"), 100_000, 1);
         var bad = TestFs.WriteRandom(Path.Combine(card, "CLIP", "A001C002.mov"), 60_000, 2);
-        var first = AppendFixtures.Options();
-        first.Proof = true;
-        var copy = new OffloadEngine(first);
-        var full = copy.Prepare(card, [dir.Sub("d1"), dir.Sub("d2")], null, "2026-10-07");
-        first.BeforeVerify = () => RepairFixtures.Corrupt(Layout.Join(full.CardPaths[1], RepairFixtures.Bad));
-        Assert.False(copy.Run(full).Success);
-        var engine = new OffloadEngine(AppendFixtures.Options());   // the proof off now: the backup's hashes decide
-        var plan = engine.PrepareRepair(engine.PlanRepair(card, full.CardPaths));
+        var options = AppendFixtures.Options();
+        options.Proof = true;
+        var engine = new OffloadEngine(options);
+        var plan = engine.Prepare(card, [dir.Sub("d1"), dir.Sub("d2")], null, "2026-10-07");
+        if (mismatch) options.BeforeVerify = () => RepairFixtures.Corrupt(Layout.Join(plan.CardPaths[1], RepairFixtures.Bad));
+        var report = engine.Run(plan);
+        Assert.Equal(!mismatch, report.Success);
+        Assert.Equal(["xxh64", "sha256"], report.HashAlgorithms);
+        return (card, plan.CardPaths, bad);
+    }
+
+    /// Options whose hash factory notes every algorithm the copy creates a hasher of.
+    static (OffloadOptions Options, System.Collections.Concurrent.ConcurrentBag<string> Created) Counting(bool proof)
+    {
+        var options = AppendFixtures.Options();
+        options.Proof = proof;
+        var created = new System.Collections.Concurrent.ConcurrentBag<string>();
+        options.HashFactory = a =>
+        {
+            created.Add(a);
+            return Verification.HashAlgo.Create(a);
+        };
+        return (options, created);
+    }
+
+    // A repair of a backup made with the proof, the proof on: it keeps the backup's hashes, SHA-256 among them — the
+    // repaired file has it again.
+    [Fact]
+    public void Repair_OfABackupWithProof_ProofOn_KeepsSha256()
+    {
+        using var dir = new TempDir();
+        var (card, paths, bad) = CopiedWithProof(dir, mismatch: true);
+        var (options, created) = Counting(proof: true);
+        var engine = new OffloadEngine(options);
+        var plan = engine.PrepareRepair(engine.PlanRepair(card, paths));
 
         var report = engine.Run(plan);
 
         Assert.True(report.SafeToFormat);
         Assert.Equal(HashKind.Xxh64 | HashKind.Sha256, plan.Hashes);
+        Assert.Contains("sha256", created);
         Assert.Equal(["xxh64", "sha256"], report.HashAlgorithms);
         Assert.Equal(Sha(bad), Assert.Single(report.Files).Sha256);
-        Assert.DoesNotContain("sha256", MhlText(full.CardPaths[1]), StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(Sha(bad), ManifestFile.Files(ManifestFile.Read(paths[1]), 2)[RepairFixtures.Bad].Sha256);
+        Assert.DoesNotContain("sha256", MhlText(paths[1]), StringComparison.OrdinalIgnoreCase);
+    }
+
+    // Design 9: the proof off = no SHA-256 at all — also for a repair of a backup that had it: none computed, none in the
+    // repair's report or its records.
+    [Fact]
+    public void Repair_OfABackupWithProof_ProofOff_NoSha256()
+    {
+        using var dir = new TempDir();
+        var (card, paths, _) = CopiedWithProof(dir, mismatch: true);
+        var (options, created) = Counting(proof: false);
+        var engine = new OffloadEngine(options);
+        var plan = engine.PrepareRepair(engine.PlanRepair(card, paths));
+
+        var report = engine.Run(plan);
+
+        Assert.True(report.SafeToFormat);
+        Assert.Equal(HashKind.Xxh64, plan.Hashes);
+        Assert.NotEmpty(created);
+        Assert.DoesNotContain("sha256", created);
+        Assert.Null(report.HashAlgorithms);
+        Assert.All(report.Files, f => Assert.Null(f.Sha256));
+        foreach (var cardPath in paths)
+        {
+            Assert.DoesNotContain("sha256", File.ReadAllText(Path.Combine(cardPath, "_REPORT", "offload_report_0002.json")), StringComparison.OrdinalIgnoreCase);
+            Assert.All(ManifestFile.Files(ManifestFile.Read(cardPath), 2).Values, r => Assert.Null(r.Sha256));
+        }
+    }
+
+    // Design 9: an append with the proof off onto a backup whose generation 1 had it computes no SHA-256.
+    [Fact]
+    public void Append_WithoutProof_OntoABackupWithIt_NoSha256()
+    {
+        using var dir = new TempDir();
+        var (card, paths, _) = CopiedWithProof(dir, mismatch: false);
+        AppendFixtures.NewClip(card);
+        var (options, created) = Counting(proof: false);
+        var engine = new OffloadEngine(options);
+        var plan = engine.PrepareAppend(card, paths);
+
+        var report = engine.Run(plan);
+
+        Assert.True(report.SafeToFormat);
+        Assert.Equal((PlanMode.Append, 2, HashKind.Xxh64), (plan.Mode, plan.Generation, plan.Hashes));
+        Assert.NotEmpty(created);
+        Assert.DoesNotContain("sha256", created);
+        Assert.Null(report.HashAlgorithms);
+        Assert.Null(Assert.Single(report.Files).Sha256);
+        foreach (var cardPath in paths)
+        {
+            var text = File.ReadAllText(Path.Combine(cardPath, "_REPORT", "offload_report_0002.json"));
+            Assert.DoesNotContain("sha256", text, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain("hashAlgorithms", text);
+            Assert.All(ManifestFile.Files(ManifestFile.Read(cardPath), 2).Values, r => Assert.Null(r.Sha256));
+        }
     }
 
     sealed class ThrowingHash : Verification.IFileHash

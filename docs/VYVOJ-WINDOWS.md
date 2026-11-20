@@ -94,6 +94,7 @@ Návrh: [`windows/docs/superpowers/specs/2026-11-19-offload-proof-design.md`](..
 
 - Úkol 1 — SHA-256 jako druh hashe (`HashKind.Sha256`, `HashAlgo` „sha256“), `bench --hash sha256`; spike: Intel Core i5-14400F (SHA-NI), xxh64 ~12 000 MB/s, SHA-256 ~1 950 MB/s na jednom vlákně (RAM, `bench --hash sha256`, Release) — kopie se zdrží jen, když je karta rychlejší než SHA-256 (brána < 5 %).
 - Úkol 2 — `files[].sha256`: se zapnutým důkazem (`JobConfig.Proof` → `OffloadOptions.Proof`, výchozí vypnuto) počítá plná kopie, doplnění i navázání SHA-256 každého souboru v jediném čtení karty (vlastní `SourceHasher` na svém vlákně jako MD5); do reportu (`files[].sha256`, `hashAlgorithms` `["xxh64", "sha256"]` / `["xxh64", "md5", "sha256"]`) a do blokového manifestu (`sha256` — navázání ho vezme u souborů, které už nečte). Oprava SHA-256 nepřidává (drží hashe zálohy), zpětné čtení ho nepočítá, ASC MHL a seznamy `.xxh64`/`.md5` beze změny; SHA-256, který selže, soubor neshodí (jen mu chybí `sha256`). HTML dlaždice „XXH64 + SHA-256“.
+- Úkol 2, oprava podle návrhu (bod 9 „vypnuto = SHA-256 se nepočítá vůbec“): s vypnutým důkazem nepočítá SHA-256 ani doplnění či navázání zálohy, jejíž generace 1 ho měla (`FromNames` dává „sha256“, plán ho odebere), ani oprava; oprava ho počítá a zapíše jen se zapnutým důkazem a zálohou, která ho měla.
 
 ## 2026-10-12 — nová ikona (obě verze)
 
