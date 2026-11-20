@@ -89,7 +89,7 @@ final class ProofFakeCalendar: @unchecked Sendable {
         set { locked { isConfirmed = newValue } }
     }
 
-    /// POST /digest answers only once this many have arrived (at most 10 s): two stamps in flight at once.
+    /// POST /digest answers only once this many have arrived (at most 3 s; Windows 10 s): two stamps in flight at once.
     var gate: Int {
         get { locked { gateCount } }
         set { locked { gateCount = newValue } }
@@ -111,7 +111,7 @@ final class ProofFakeCalendar: @unchecked Sendable {
         state.lock()
         posts += 1
         state.broadcast()
-        let deadline = Date().addingTimeInterval(10)
+        let deadline = Date().addingTimeInterval(3)
         while posts < gateCount {
             if !state.wait(until: deadline) { break }
         }
@@ -672,8 +672,9 @@ final class ProofServiceTests: XCTestCase {
         }
         let app = rig.service()
         let cli = rig.service()
-        // both stamp the first entry at once (Mac: only A waits for the second POST — the stub may answer every request
-        // on one thread, and one gate is enough to keep both stamps in flight)
+        // both stamp the first entry at once (Mac: only A waits for the second POST — URLSession runs the stub's answers
+        // on one thread, so the gate never opens early and waits its 3 s; that keeps the first stamp in flight while the
+        // other service asks too)
         rig.a.gate = 2
 
         async let appRun = app.runDue()
@@ -766,22 +767,23 @@ final class ProofServiceTests: XCTestCase {
             try ProofServiceTests.write(pendingBytes, ProofServiceTests.otsPath(c1))   // the disk as the first stamp left it
             let start = DispatchSemaphore(value: 0)
             let group = DispatchGroup()
-            let completeTree = try OtsFile.parse(completeBytes)
-            let otherTree = try OtsFile.parse(branchBytes)
             let doneEntry = done
             let staleEntry = stale
             group.enter()
             Thread {
+                // fresh trees every round: a union merges what the disk had into the caller's tree
+                let completeTree = try? OtsFile.parse(completeBytes)
                 start.wait()
                 var x = doneEntry
-                _ = app.writeToDisks(&x, completeTree)
+                if let tree = completeTree { _ = app.writeToDisks(&x, tree) }
                 group.leave()
             }.start()
             group.enter()
             Thread {
+                let otherTree = try? OtsFile.parse(branchBytes)
                 start.wait()
                 var y = staleEntry
-                _ = cli.writeToDisks(&y, otherTree)
+                if let tree = otherTree { _ = cli.writeToDisks(&y, tree) }
                 group.leave()
             }.start()
             start.signal()
