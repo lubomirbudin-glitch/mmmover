@@ -8,6 +8,7 @@ mmMover (formerly ArcLoader and Offload) itself is **All rights reserved** (see 
 |---|---|---|
 | xxHash (Yann Collet) | `mac/Sources/CXXHash/` | BSD 2-Clause, text in `xxhash.h` |
 | Blackmagic RAW API header and dispatch (Blackmagic Design) | `mac/Tools/braw-decode/BlackmagicRawAPI.h`, `BlackmagicRawAPIDispatch.cpp` | permissive licence in the file headers |
+| OpenTimestamps example proofs `hello-world.txt.ots`, `incomplete.txt.ots` (opentimestamps-client, `examples/`) | `windows/tests/Offload.Core.Tests/OtsFormatTests.cs` (as hex constants; test data only, not shipped) | LGPL-3.0 |
 
 ## Used at build time (not in this repository)
 
