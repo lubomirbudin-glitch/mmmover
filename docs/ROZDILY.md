@@ -70,7 +70,7 @@ a [VYVOJ-WINDOWS.md](VYVOJ-WINDOWS.md).
 | **Verify-in-Proxy** (primární disk ověřený čtením pro proxy, ostatní na pozadí; `--classic-verify`, `--primary`) | ✅ CLI + GUI 0.7.0 (s kontrolou cache přes `mincore`; přepínač „Verify during proxy render“ i v kroku 3; čeká ruční test s kartou) | ✅ CLI + GUI 0.6.0 |
 | **Lze vyjmout × Lze formátovat** (dva stavy karty, oznámení „hotovo“ až po ověření všech disků) | ✅ GUI + CLI (od 0.7.0 i s ověřením během proxy) | ✅ GUI + CLI 0.6.0 |
 | **XXH128 v ASC MHL** (vedle xxh64) a `files[].xxh128` | ⏳ naplánováno (xxh64) | ✅ 0.6.0 |
-| **Offload Proof** (SHA-256 v jediném čtení karty, `_REPORT/offload_proof.json` s Merkle kořenem, časové razítko OpenTimestamps v Bitcoinu `.ots`, fronta offline, `files[].sha256`, `proof.enabled`, `--no-proof`, `mmmover proof verify \| status \| upgrade`; SHA-256 není v ASC MHL) | ⏳ naplánováno (stejný formát; `sha256` v reportu ignoruje) | ✅ CLI + GUI 0.12.0 (chip „Proof“ na kartě úlohy, přepínač v Nastavení › Verification; čeká ruční test s kartou) |
+| **Offload Proof** (SHA-256 v jediném čtení karty, `_REPORT/offload_proof.json` s Merkle kořenem, časové razítko OpenTimestamps v Bitcoinu `.ots`, fronta offline, `files[].sha256`, `proof.enabled`, `--no-proof`, `mmmover proof verify \| status \| upgrade`; SHA-256 není v ASC MHL) | ✅ CLI + GUI 0.8.0 (stejný formát, `tool.platform` `"macos"`; chip „Proof“ na kartě úlohy, přepínač v Nastavení › Verify, služba na pozadí; čeká ruční test s kartou) | ✅ CLI + GUI 0.12.0 (chip „Proof“ na kartě úlohy, přepínač v Nastavení › Verification; čeká ruční test s kartou) |
 | **Blokový manifest a navázání po pádu** (`offload-manifest.jsonl`, „Dokončit přerušenou zálohu“) | ✅ 0.7.0 (manifest, „Finish interrupted backup“ v GUI, `arcloader append`; oprava na Macu zatím není; čeká ruční test s `kill -9`) | ✅ 0.6.0 |
 | **Obsahová kontrola dekodérem** (`clips[].content`, vady s timecodem a náhledem) | ✅ 0.7.0 (potvrzení na kartě úlohy) | ✅ 0.6.0 |
 | **Kopie reportu i na počítači** (`_REPORT` + `ascmhl` do `Dokumenty\mmMover reports\<datum>\<karta>\` (Windows; 0.10.x `ArcLoader reports`, do 0.9.x `Offload reports`, čtou se dál), obnoví se při každém přepisu; `outputs.localReport`, `--no-local-report`) | ✅ 0.2.0C (`~/Documents/ArcLoader reports` po přejmenování; do té doby `Offload reporty`, čte se dál) | ✅ CLI + GUI (čeká ruční test) |
@@ -112,6 +112,11 @@ a [VYVOJ-WINDOWS.md](VYVOJ-WINDOWS.md).
   verzích stejné, jen jazyk se liší; klíče JSON, názvy souborů a struktura (FORMATY.md) zůstávají společné, lidské texty
   v JSON (`proxyNote`, `probeError`, `lut.reason`, `chainProblems` …) píše Mac anglicky a Windows česky. Termíny Macu:
   [`mac/docs/en-glossary.md`](../mac/docs/en-glossary.md).
+- **Offload Proof — texty, které se mezi Macem a Windows liší (0.8.0):** (1) důvod syntaktické chyby JSON ve výpisu
+  `FAILED` za „The proof file is not valid: “ říká vlastními slovy čtečka Macu (System.Text.Json má jiná); (2) texty
+  vstupně-výstupních chyb jsou anglický `strerror` (Windows text chyby systému); (3) osamělý surrogát UTF-16 ve známém
+  poli manifestu je na Macu `FAILED`, Windows ho čte uprostřed řetězce a jde dál; (4) `mmmover proof status <id>` a
+  `mmmover proof upgrade <id>` existují jen na Macu.
 - **Kontroly před kopií navíc na Windows:** názvy lišící se jen velikostí písmen (NTFS/exFAT je nerozliší),
   názvy, které Windows nepovolí (`<>:"|?*`, `CON`, `NUL`…), soubor ≥ 4 GB na cíl s FAT32.
 - **Svazky bez přímého zápisu** (některé síťové): Windows přejde na zápis přes cache a report to u cíle uvede

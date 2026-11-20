@@ -33,7 +33,7 @@ a Mac mají české texty). Slovník pojmů: [ui-text-glossary.md](ui-text-gloss
         <karta>_clips.csv             seznam klipů (Windows od 0.3.0)
         <karta>_clips.ale             seznam klipů pro Avid (Windows od 0.3.0, když je zapnutý)
         offload-manifest.jsonl        blokový manifest (Windows od 0.6.0, Mac od 0.7.0) — viz „Blokový manifest“
-        offload_proof.json            manifest důkazu (Windows od 0.12.0, Mac naplánováno) — viz „Offload Proof“
+        offload_proof.json            manifest důkazu (Windows od 0.12.0, Mac od 0.8.0) — viz „Offload Proof“
         offload_proof.json.ots        časové razítko OpenTimestamps manifestu (stejně)
         offload_report_0002.json      jen po doplnění (generace 2, 3 …): report jen nových souborů
         offload_proof_0002.json       jen po doplnění s důkazem (+ `.ots` vedle)
@@ -314,7 +314,7 @@ selhaly — jako další generace ve stejné složce karty (jen GUI, tlačítko 
 - report `offload_report_NNNN.*` s `kind: "repair"`, `rewritten`, `setAside`; `<karta>.xxh64` (a `.md5`) se přepíše bez
   opakovaných řádků; nic k opravě = nic se nezapíše.
 
-## Offload Proof — `_REPORT/offload_proof.json` a `.ots` (Windows od 0.12.0, Mac naplánováno)
+## Offload Proof — `_REPORT/offload_proof.json` a `.ots` (Windows od 0.12.0, Mac od 0.8.0)
 
 Důkaz, že soubory generace existovaly přesně v tomto stavu nejpozději v čase T. Ven z počítače odchází jen 32bajtový
 hash (s náhodným nonce), nikdy obsah ani názvy. Návrh: [`windows/docs/superpowers/specs/2026-11-19-offload-proof-design.md`](../windows/docs/superpowers/specs/2026-11-19-offload-proof-design.md),
@@ -343,9 +343,10 @@ UTF-8 bez BOM, bez koncového řádku, **přesně** kanonická serializace RFC 8
 mezer; jen řetězce, celá čísla, `true/false`, pole a objekty). Ověřovač odmítne manifest, který není kanonický — kanonický
 zápis kontroluje na **načteném JSON** (RFC 8785 toho, co v souboru je), ne na tom, co z něj udělá jeho verze: klíč, který
 přidá pozdější zapisovatel (a který je v kanonickém zápisu i v ukotveném digestu), není úprava, ověřovač ho přeskočí.
-Teprve potom kontroluje pole s vlastními hláškami; manifest, který kontroly nepřežije (hash s čímkoli za hex číslicemi,
+Pořadí kontrol: nejdřív pole s vlastními hláškami (Windows, Mac i Python); manifest, který je nepřežije (hash s čímkoli za hex číslicemi,
 `size` mimo 0…2^53 − 1, `version` ≠ 1, `count` < 0, `generation` < 1, `excluded`/`files`/`mhl` jiné než pole objektů), je
-`FAILED — <jméno> is not a valid proof manifest (<důvod>)`, nikdy výjimka (oba ověřovače).
+`FAILED — <jméno> is not a valid proof manifest (<důvod>)`, nikdy výjimka (všechny tři ověřovače); teprve potom se
+kontroluje kanonický zápis, Merkle kořen a `count`.
 
 | Klíč | Typ | Obsah |
 |---|---|---|
@@ -353,7 +354,7 @@ Teprve potom kontroluje pole s vlastními hláškami; manifest, který kontroly 
 | `version` | int | `1` |
 | `id` | string | UUID malými písmeny s pomlčkami |
 | `created` | string | čas stroje `yyyy-MM-ddTHH:mm:ssZ` (UTC) — jen informativně, důkazní čas je z ukotvení |
-| `tool` | object | `name` `"mmMover"`, `version` (`OffloadVersion.String`), `platform` `"windows"` |
+| `tool` | object | `name` `"mmMover"`, `version` (`OffloadVersion.String`), `platform` `"windows"` (Mac od 0.8.0 `"macos"`) |
 | `machine` | string | jméno počítače |
 | `card` | object | `name`, `date` (`yyyy-MM-dd` složky dne), `source` (jako report), `generation` (int, 1 = celá kopie), `project`? (chybí bez projektu) |
 | `complete` | bool | každý soubor generace je ve `files` |
@@ -414,6 +415,9 @@ kořen a `count`, kanonický zápis manifestu, digest v `.ots` a Bitcoin atestac
 zdroje hlaviček nedostupné či v rozporu).
 
 ### Fronta `%APPDATA%\mmMover\proof\` (jen tento počítač)
+
+Mac od 0.8.0: tentýž formát v `~/Library/Application Support/mmMover/proof/`; místo mutexů `flock` na
+`~/Library/Application Support/Offload/locks/proof-store.lock` (zápisy fronty) a `proof-disks.lock` (zápis `.ots` na disky).
 
 `<id>.json` (+ `<id>.ots`, poslední známý strom): `id`, `created`, `manifest` (jméno souboru), `digest` (hex), `cardName`,
 `date`, `generation`, `cardPaths[]`, `volumeSerials[]`, `state`, `stampedAt`?, `nextCheck`?, `tries`, `lastError`?,
@@ -570,7 +574,7 @@ nebo formát `arriraw`) je to TC denní doby. Stopáž = součet `info.duration`
   při kopii, nebo první cíl. Jiná hodnota (z novější verze) se zachová a čte jako `"fastest"`. CLI `--primary N` (1…počet cílů) má přednost.
 - `hash` (`"xxh64"` | `"both"`, výchozí `"xxh64"`, Windows od 0.3.0): kontrolní součty kopie; `both` = xxh64 + MD5. Jiná
   hodnota (z novější verze) se zachová a čte jako `xxh64`.
-- `proof` (Windows od 0.12.0, součást projektu): `enabled` (bool) — Offload Proof: počítat SHA-256 a po každé kopii
+- `proof` (Windows od 0.12.0, Mac od 0.8.0 v `UserDefaults` klíči `settings`, jen hlavní profil; součást projektu): `enabled` (bool) — Offload Proof: počítat SHA-256 a po každé kopii
   založit důkaz (viz „Offload Proof“); vypnuto = SHA-256 se nepočítá vůbec. Výchozí (klíč chybí: první start, nastavení
   starší verze, projekt bez sekce) = `true` jen na CPU s instrukcemi SHA, jinak `false`; uložená hodnota vždy vyhraje. Bez
   instrukcí SHA ukáže Nastavení pod přepínačem „This computer has no SHA instructions: Offload Proof hashes about N MB/s

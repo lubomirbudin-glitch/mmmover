@@ -74,7 +74,7 @@ card goes into the reader until it is safe to format it.
   - **3 thumbnails of every clip**, camera metadata, timecode, lens, audio and size;
   - the list of all files with their checksums.
 - **ASC MHL v2.** Third-party tools (`ascmhl`, Silverstack, ShotPut Pro) can verify the backup too.
-- **Offload Proof** (Windows 0.12.0, beta; the Mac gets the same format next): a time-anchored proof that the files existed unchanged no later than
+- **Offload Proof** (Windows 0.12.0 and Mac 0.8.0, beta; the same format on both): a time-anchored proof that the files existed unchanged no later than
   a given time — see [below](#offload-proof--time-anchored-proof).
 - **Proxies (optional):**
   - scaling and LUT (built-in by camera, your own rules or your own `.cube`);
@@ -107,7 +107,7 @@ Both versions also have a **command line** (`mmmover`) for scripts: `copy`, `app
 
 ## Offload Proof — time-anchored proof
 
-*Windows 0.12.0 (beta). The Mac gets the same format next.*
+*Windows 0.12.0 and Mac 0.8.0 (beta). Both write the same format and either one verifies the other's proofs.*
 
 Offload Proof gives every offload a cryptographic proof that **these exact files existed, unchanged, no later than
 time T**. Years later you can show that your footage existed on the shooting day and nobody has touched it since.
@@ -193,8 +193,8 @@ automatically from the clip's metadata. The LUTs are generated from the makers' 
 | Folder | [`windows/`](windows/) | [`mac/`](mac/) |
 | System | Windows 10/11 x64 | macOS 13+ (Apple Silicon and Intel) |
 | Technology | C# / .NET 10, WPF | Swift 5.9, SwiftUI |
-| Version | 0.12.0 | 0.7.0 |
-| Status | ahead in features: Copy again, MD5, clip lists CSV/ALE, projects, ntfy, update check, XXH128 in ASC MHL, Offload Proof (0.12.0, beta) | in use on set; card history, append, Verify backup, day report, Verify-in-Proxy and resume after a crash as on Windows |
+| Version | 0.12.0 | 0.8.0 |
+| Status | ahead in features: Copy again, MD5, clip lists CSV/ALE, projects, ntfy, update check, XXH128 in ASC MHL, Offload Proof (0.12.0, beta) | in use on set; card history, append, Verify backup, day report, Verify-in-Proxy, resume after a crash and Offload Proof (0.8.0, beta) as on Windows |
 
 Exactly what each version can do is in the table in [docs/ROZDILY.md](docs/ROZDILY.md). The change history is in
 [docs/VYVOJ-WINDOWS.md](docs/VYVOJ-WINDOWS.md) and [docs/VYVOJ-MAC.md](docs/VYVOJ-MAC.md) (all three in Czech).
