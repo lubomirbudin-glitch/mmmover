@@ -155,7 +155,8 @@ enum Snapshots {
         return m
     }
 
-    /// Plan 11: a finished card with the proof chip beside its verdicts — waiting for network, anchoring, anchored.
+    /// Plan 11: three finished cards, each with its proof chip beside the verdicts — waiting for network, anchoring,
+    /// anchored (the tooltips are not in the picture).
     static func proof() -> AppModel {
         let m = base()
         let waiting = proofEntry(.queued, written: [ProofEntry.writtenNone, ProofEntry.writtenNone])
@@ -173,22 +174,21 @@ enum Snapshots {
         let m = base()
         var partly = proofEntry(.complete, written: [ProofEntry.writtenComplete, ProofEntry.writtenPending])
         partly.bitcoinHeight = 925_118
-        var notCreated = provenCard("B012_FX6", nil)
-        notCreated.proofChip = JobProgress.proofChip(enabled: true, error: ProofMsg.noCardFolder, entry: nil)
-        notCreated.proofTooltip = JobProgress.proofTooltip(enabled: true, error: ProofMsg.noCardFolder, entry: nil)
+        let notCreated = provenCard("B012_FX6", nil, error: ProofMsg.noCardFolder)
         m.jobs = [job("B012_FX6", notCreated), job("A035_ARRI", provenCard("A035_ARRI", partly))]
         return m
     }
 
-    /// A green card (no summary, no thumbnails — three fit the window) with the chip and tooltip of `entry`.
-    static func provenCard(_ name: String, _ entry: ProofEntry?) -> JobCardState {
+    /// A green card (no summary, no thumbnails — three fit the window) with the chip and tooltip of `entry` (or of the
+    /// job's `error`).
+    static func provenCard(_ name: String, _ entry: ProofEntry?, error: String? = nil) -> JobCardState {
         var c = JobCardState(kind: .done, phase: .done, name: name, sub: "24 files · 1.70 GB")
         c.title = "\(name) — safe to format"
         c.text = "All 24 files are on 2 disks and verified (xxHash64)."
         c.ejectChip = CardChip(text: "Safe to eject", tone: .ok)
         c.formatChip = CardChip(text: "Safe to format", tone: .ok)
-        c.proofChip = JobProgress.proofChip(enabled: true, error: nil, entry: entry)
-        c.proofTooltip = JobProgress.proofTooltip(enabled: true, error: nil, entry: entry)
+        c.proofChip = JobProgress.proofChip(enabled: true, error: error, entry: entry)
+        c.proofTooltip = JobProgress.proofTooltip(enabled: true, error: error, entry: entry)
         c.path = "…/2026-11-20/\(name)/"
         c.hasReport = true
         return c
