@@ -119,6 +119,14 @@ jobs:
             --skip 'MacHardwareTests/testStartupVolumeIsInternalWithAProduct' \
             --skip 'MacHardwareTests/testEveryUsbDeviceLinksToASocketInThePortList'
 
+      # Plan 11 (Offload Proof): the release CLI copies a small random card (a disk image) onto two folders of
+      # $RUNNER_TEMP, then `mmmover proof verify` and the independent shared/proof/verify_proof.py must print the same
+      # SHA-256 and RESULT lines and exit the same (2 = NOT YET) — on that card and on the Windows fixtures. It needs only
+      # .build/release/mmmover and python3, so it runs with app=false too. The copy's stamp after the job asks the real
+      # calendars once (a nonce'd commitment of random data); nothing depends on their answer.
+      - name: Proof cross-check (mmmover proof verify and verify_proof.py)
+        run: bash scripts/proof-cross-check.sh
+
       - name: App
         if: ${{ github.event_name != 'workflow_dispatch' || inputs.app }}
         run: scripts/build-app.sh
@@ -242,6 +250,14 @@ jobs:
           swift test "${F[@]}" \
             --skip 'MacHardwareTests/testStartupVolumeIsInternalWithAProduct' \
             --skip 'MacHardwareTests/testEveryUsbDeviceLinksToASocketInThePortList'
+
+      # Plan 11 (Offload Proof): the release CLI copies a small random card (a disk image) onto two folders of
+      # $RUNNER_TEMP, then `mmmover proof verify` and the independent shared/proof/verify_proof.py must print the same
+      # SHA-256 and RESULT lines and exit the same (2 = NOT YET) — on that card and on the Windows fixtures. It needs only
+      # .build/release/mmmover and python3, so it runs with app=false too. The copy's stamp after the job asks the real
+      # calendars once (a nonce'd commitment of random data); nothing depends on their answer.
+      - name: Proof cross-check (mmmover proof verify and verify_proof.py)
+        run: bash scripts/proof-cross-check.sh
 
       - name: App
         if: ${{ github.event_name != 'workflow_dispatch' || inputs.app }}
