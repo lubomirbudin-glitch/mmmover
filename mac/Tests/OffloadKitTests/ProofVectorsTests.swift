@@ -19,7 +19,12 @@ enum ProofVectors {
             if FileManager.default.fileExists(atPath: p.appendingPathComponent("vectors.json").path) { return p.path }
             dir = dir.deletingLastPathComponent()
         }
-        throw XCTSkip("shared/proof/vectors.json was not found above \(#filePath)")
+        // A failure, not a skip (Windows fails too): the vectors are part of the repository.
+        throw VectorsMissing(description: "shared/proof/vectors.json was not found above \(#filePath)")
+    }
+
+    struct VectorsMissing: Error, CustomStringConvertible {
+        let description: String
     }
 
     static func all() throws -> [String: Any] {
