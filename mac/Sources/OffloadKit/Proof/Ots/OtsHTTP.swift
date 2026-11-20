@@ -168,9 +168,45 @@ public final class OtsHTTP: @unchecked Sendable {
         if let n = error as? OtsNetworkError { return n.reason }
         if let u = error as? URLError {
             if u.code == .cancelled || u.code == .timedOut { return "timeout" }
-            return "TLS/connection: \(u.localizedDescription)"
+            return "TLS/connection: " + OtsHTTP.connectionText(u.code)
         }
         return String(describing: error)
+    }
+
+    /// A failed connection in fixed English words (M5a review: `localizedDescription` follows the user's language; the
+    /// reason goes into the queue's `lastError` and the log, which are English).
+    static func connectionText(_ code: URLError.Code) -> String {
+        switch code {
+        case .cannotFindHost, .dnsLookupFailed:
+            return "the host name could not be resolved"
+        case .cannotConnectToHost:
+            return "could not connect to the host"
+        case .networkConnectionLost:
+            return "the connection was lost"
+        case .notConnectedToInternet, .internationalRoamingOff, .dataNotAllowed, .callIsActive:
+            return "no network connection"
+        case .secureConnectionFailed:
+            return "the secure connection failed"
+        case .serverCertificateUntrusted, .serverCertificateHasUnknownRoot, .serverCertificateHasBadDate,
+             .serverCertificateNotYetValid:
+            return "the server's certificate is not trusted"
+        case .clientCertificateRejected, .clientCertificateRequired:
+            return "the server asked for a client certificate"
+        case .badServerResponse, .cannotParseResponse, .zeroByteResource, .cannotDecodeRawData, .cannotDecodeContentData:
+            return "the server's answer is not valid HTTP"
+        case .httpTooManyRedirects, .redirectToNonExistentLocation:
+            return "the redirects lead nowhere"
+        case .badURL, .unsupportedURL:
+            return "the address is not valid"
+        case .userAuthenticationRequired, .userCancelledAuthentication:
+            return "the server asks for a login"
+        case .appTransportSecurityRequiresSecureConnection:
+            return "only a secure connection is allowed"
+        case .dataLengthExceedsMaximum:
+            return OtsHTTP.tooBig
+        default:
+            return "network error \(code.rawValue)"
+        }
     }
 }
 

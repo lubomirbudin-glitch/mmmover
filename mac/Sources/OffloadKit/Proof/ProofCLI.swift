@@ -110,6 +110,192 @@ public enum ProofCLI {
             }
         }
     }
+
+    // MARK: - mmmover proof verify | status | upgrade (Windows `ProofCommand`)
+
+    /// What a `proof` command prints: `lines` on stdout, `errors` on stderr, and its exit code.
+    public typealias Output = (lines: [String], errors: [String], exitCode: Int32)
+
+    /// Ctrl+C during a `proof` command (stderr, exit 1).
+    public static let cancelled = "Cancelled."
+
+    /// 0 OK, 1 FAILED, 2 NOT YET.
+    public static func exitCode(_ outcome: ProofOutcome) -> Int32 {
+        switch outcome {
+        case .ok: return 0
+        case .failed: return 1
+        case .notYet: return 2
+        }
+    }
+
+    /// `mmmover proof verify <file | card folder> [--offline]`: the verifier's lines, exit 0 OK, 1 FAILED, 2 NOT YET;
+    /// a path that is neither a file nor a folder is an error (exit 1). `progress` (a card folder): `<i>/<n>  <path>` at
+    /// most twice a second, for the status line. Cancelling the calling task (Ctrl+C) ends it: "Cancelled.", exit 1.
+    public static func verify(path: String, offline: Bool, options: ProofVerifyOptions = .default(),
+                              progress: ((String) -> Void)? = nil) async -> Output {
+        let full = ProofCLI.fullPath(path)
+        let isFolder = ProofService.isDirectory(full)
+        if !isFolder && !ProofService.isFile(full) {
+            return (lines: [], errors: [Msg.cliError + "\(path) is not a file or a folder."], exitCode: 1)
+        }
+        var o = options
+        if offline { o.offline = true }
+        if isFolder, let show = progress {
+            let pace = ProofCLIPace(every: 0.5)
+            o.progress = { file, i, n in
+                if pace.due() { show("\(i + 1)/\(n)  \(file)") }
+            }
+        }
+        do {
+            let v: ProofVerdict
+            if isFolder {
+                v = try await ProofVerifier.verifyFolder(full, options: o)
+            } else {
+                v = try await ProofVerifier.verifyFile(full, options: o)
+            }
+            return (lines: v.lines, errors: [], exitCode: exitCode(v.outcome))
+        } catch {
+            return (lines: [], errors: [cancelled], exitCode: 1)
+        }
+    }
+
+    /// `mmmover proof status`: one line per proof in the queue (oldest first), or that there is none; `status <id>`
+    /// (Mac plan 11): that proof's line, an error when the queue has no such proof.
+    public static func status(id: String? = nil, store: ProofStore = .default()) -> Output {
+        if let id {
+            guard ProofCLI.isProofId(id), let e = store.get(id) else {
+                return (lines: [], errors: [Msg.cliError + ProofCLI.notInQueue(id, store)], exitCode: 1)
+            }
+            return (lines: [statusLine(e)], errors: [], exitCode: 0)
+        }
+        let all = store.all()
+        if all.isEmpty { return (lines: ["No proofs in the queue (\(store.folder))."], errors: [], exitCode: 0) }
+        return (lines: all.map { ProofCLI.statusLine($0) }, errors: [], exitCode: 0)
+    }
+
+    /// `A001  2026-11-19  generation 1  anchored in Bitcoin block 800000 (2026-11-19 23:41:07 UTC)  on 2 of 2 disks`
+    /// (+ `  — <last error>` while not anchored). `on N of M disks`: the disks holding the .ots — anchored: the complete
+    /// one; before: any.
+    public static func statusLine(_ e: ProofEntry) -> String {
+        let state: String
+        switch e.state {
+        case .queued:
+            state = "waiting for network"
+        case .pending:
+            state = "anchoring (Bitcoin confirms in a few hours)"
+        case .complete:
+            var s = "anchored"
+            if let h = e.bitcoinHeight { s += " in Bitcoin block \(h)" }
+            if let t = e.bitcoinTime {
+                s += " (\(ProofVerifier.utc(t)))"
+            } else if e.bitcoinHeight != nil {
+                s += " (block time not checked)"
+            }
+            state = s
+        case .failed:
+            state = "not created"
+        }
+        var on = 0
+        for w in e.written {
+            let counts: Bool = e.state == .complete ? w == ProofEntry.writtenComplete : w != ProofEntry.writtenNone
+            if counts { on += 1 }
+        }
+        let card: String = e.cardName.isEmpty ? "?" : e.cardName
+        let disks: String = e.cardPaths.count == 1 ? "disk" : "disks"
+        let line = "\(card)  \(e.date)  generation \(e.generation)  \(state)  on \(on) of \(e.cardPaths.count) \(disks)"
+        if e.state != .complete, let why = e.lastError, !why.isEmpty { return line + "  — " + why }
+        return line
+    }
+
+    /// `mmmover proof upgrade`: every proof in the queue now (stamp, upgrade, write onto the disks), one status line per
+    /// proof it worked; `upgrade <card folder>`: the .ots files in its `_REPORT` in place (a proof manifest without one
+    /// is stamped); `upgrade <id>` (Mac plan 11): that proof of the queue now. The service's lines go to `log` (stderr)
+    /// unless `options` has its own. Cancelling the calling task (Ctrl+C) ends it: "Cancelled.", exit 1.
+    public static func upgrade(target: String? = nil, store: ProofStore = .default(),
+                               options: ProofServiceOptions = .default(), log: ((String) -> Void)? = nil) async -> Output {
+        var folder: String?
+        var id: String?
+        if let target {
+            let full = ProofCLI.fullPath(target)
+            if ProofService.isDirectory(full) {
+                folder = full
+            } else if ProofCLI.isProofId(target) {
+                guard store.get(target) != nil else {
+                    return (lines: [], errors: [Msg.cliError + ProofCLI.notInQueue(target, store)], exitCode: 1)
+                }
+                id = target
+            } else {
+                return (lines: [], errors: [Msg.cliError + "\(target) is not a folder."], exitCode: 1)
+            }
+        }
+        var o = options
+        if o.log == nil { o.log = log }
+        let service = ProofService(store: store, options: o)
+        if let folder {
+            do {
+                guard let lines = try await service.upgradeFolder(folder) else {
+                    let report = folder + "/" + Layout.reportDirName
+                    return (lines: [], errors: [Msg.cliError + "no proof manifest or timestamp (.ots) in \(report)."], exitCode: 1)
+                }
+                return (lines: lines, errors: [], exitCode: 0)
+            } catch {
+                return (lines: [], errors: [cancelled], exitCode: 1)
+            }
+        }
+        if let id {
+            let worked = await service.runDue(only: [id], force: true)
+            if Task.isCancelled { return (lines: [], errors: [cancelled], exitCode: 1) }
+            let now = worked.first ?? store.get(id)
+            return (lines: now.map { [ProofCLI.statusLine($0)] } ?? [], errors: [], exitCode: 0)
+        }
+        let worked = await service.runDue(force: true)
+        if Task.isCancelled { return (lines: [], errors: [cancelled], exitCode: 1) }
+        if worked.isEmpty {
+            let nothing = "Nothing to do — no proof in the queue waits for the calendars or for a disk (mmmover proof status lists them)."
+            return (lines: [nothing], errors: [], exitCode: 0)
+        }
+        return (lines: worked.map { ProofCLI.statusLine($0) }, errors: [], exitCode: 0)
+    }
+
+    /// A proof's id as the queue names it: a UUID (8-4-4-4-12 hex digits) — anything else is a folder's name.
+    static func isProofId(_ s: String) -> Bool {
+        let b = Array(s.utf8)
+        guard b.count == 36 else { return false }
+        for (i, c) in b.enumerated() {
+            if i == 8 || i == 13 || i == 18 || i == 23 {
+                if c != 0x2D { return false }
+                continue
+            }
+            let hex = (c >= 0x30 && c <= 0x39) || (c >= 0x61 && c <= 0x66) || (c >= 0x41 && c <= 0x46)
+            if !hex { return false }
+        }
+        return true
+    }
+
+    static func notInQueue(_ id: String, _ store: ProofStore) -> String { "no proof \(id) in the queue (\(store.folder))." }
+
+    /// As the CLI takes a path: `~` expanded, relative to the current folder, `.` and `..` resolved.
+    static func fullPath(_ path: String) -> String {
+        URL(fileURLWithPath: (path as NSString).expandingTildeInPath).standardizedFileURL.path
+    }
+}
+
+/// `true` at most once per `every` seconds (the first call too): the status line of `proof verify <card folder>`.
+final class ProofCLIPace: @unchecked Sendable {
+    private let lock = NSLock()
+    private let every: TimeInterval
+    private var last = Date.distantPast
+
+    init(every: TimeInterval) { self.every = every }
+
+    func due() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        let now = Date()
+        if now.timeIntervalSince(last) < every { return false }
+        last = now
+        return true
+    }
 }
 
 /// One stamp after the job: what its task needs.

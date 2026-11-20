@@ -5,12 +5,39 @@ import Foundation
 /// Unicode scalars of the canonical equivalent), strings exactly as `ProofJSON` holds them (no normalisation).
 /// Strings: `\"` `\\` `\b` `\f` `\n` `\r` `\t`, any other U+0000…U+001F as `\u00xx`, a lone surrogate as `\udxxx` (lower
 /// case), everything else (also U+007F, U+2028, emoji) as raw UTF-8. Integers in decimal: `ProofJSON.parse` gives
-/// only ±(2^53 − 1), and `ProofManifest.toJSON` writes only checked values.
+/// only ±(2^53 − 1) (a lenient parse also `.number`, which `canonical` refuses), and `ProofManifest.toJSON` writes only
+/// checked values.
 public enum Jcs {
     public static func serialize(_ value: ProofJSON) -> [UInt8] {
         var out: [UInt8] = []
         write(value, into: &out)
         return out
+    }
+
+    /// The canonical bytes of JSON read leniently (`ProofJSON.parse(lenient:)`), as Windows `Jcs.Serialize` of a parsed
+    /// `JsonNode`: ProofFormatError, with the words of the .NET exception, for what that cannot write — an object with a
+    /// key twice (.NET builds an object where it is first used) and a number that is no integer within ±(2^53 − 1) —
+    /// the first one in the order it writes (keys sorted, arrays in order). The verifier's canonical check (M5b).
+    public static func canonical(_ value: ProofJSON) throws -> [UInt8] {
+        try check(value)
+        return serialize(value)
+    }
+
+    static func check(_ value: ProofJSON) throws {
+        switch value {
+        case let .number(text):
+            throw ProofFormatError("Only integers in +-(2^53-1) are supported: " + text)
+        case let .array(items):
+            for item in items { try check(item) }
+        case let .object(members):
+            if let key = ProofJSON.firstDuplicateKey(members) {
+                throw ProofFormatError(ProofJSON.duplicateKeyMessage(key))
+            }
+            let sorted = members.sorted { a, b in a.0.lexicographicallyPrecedes(b.0) }
+            for member in sorted { try check(member.1) }
+        default:
+            return
+        }
     }
 
     static let hexDigits: [UInt8] = Array("0123456789abcdef".utf8)
@@ -27,6 +54,9 @@ public enum Jcs {
             }
         case let .int(n):
             out.append(contentsOf: Array(String(n).utf8))
+        case let .number(text):
+            // never canonical (`canonical` refuses it); written as the file had it
+            out.append(contentsOf: Array(text.utf8))
         case let .string(units):
             writeString(units, into: &out)
         case let .array(items):

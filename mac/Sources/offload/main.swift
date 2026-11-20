@@ -9,7 +9,8 @@ struct Offload: ParsableCommand {
         commandName: Product.cli,
         abstract: "\(Product.name): camera card offload — read once, write to several disks, verify with xxh64.",
         version: OffloadVersion.string,
-        subcommands: [Copy.self, Append.self, Verify.self, DayReportCommand.self, SummaryReportCommand.self, Bench.self, Ports.self, Luts.self],
+        subcommands: [Copy.self, Append.self, Verify.self, DayReportCommand.self, SummaryReportCommand.self, Bench.self, Ports.self, Luts.self,
+                      ProofCommand.self],
         defaultSubcommand: Copy.self)
 
     /// Errors of a command print as "Error: …" (the Mac is English; Windows prints them in Czech). Parser errors
@@ -605,6 +606,103 @@ struct Luts: ParsableCommand {
         let cat = LutCatalog.shared
         if cat.luts.isEmpty { fputs(Msg.noBuiltinLuts + "\n", stderr) }
         for l in cat.luts { print("\(l.id) — \(l.name)") }
+    }
+}
+
+/// Plan 11 (Windows `ProofCommand`): `mmmover proof verify <file | card folder> [--offline]` (exit 0 OK, 1 FAILED,
+/// 2 NOT YET), `proof status [<id>]` (the queue, one line per proof) and `proof upgrade [<id> | <card folder>]` (the
+/// queue now, one proof of it, or the .ots files of one card folder in place). The logic is ProofCLI's (OffloadKit).
+struct ProofCommand: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "proof",
+        abstract: "Offload Proof: check a file or a card folder against its proof; see or finish the proofs in the queue.",
+        subcommands: [ProofVerifyCommand.self, ProofStatusCommand.self, ProofUpgradeCommand.self])
+}
+
+struct ProofVerifyCommand: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "verify",
+        abstract: "Check that a file (or every file of a card folder) is unchanged and existed no later than the Bitcoin block its proof is anchored in. Exit 0 = OK, 1 = FAILED, 2 = NOT YET.")
+
+    @Argument(help: "A file of a backup, or a card folder (<root>/<date>/<card>): every file of its proof.")
+    var path: String
+
+    @Flag(help: "Ask no block explorer: check the files, the manifest and what the .ots says (the result is at best NOT YET).")
+    var offline = false
+
+    func run() throws {
+        let path = self.path
+        let offline = self.offline
+        try ProofRun.run { show in
+            await ProofCLI.verify(path: path, offline: offline, progress: show)
+        }
+    }
+}
+
+struct ProofStatusCommand: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "status",
+        abstract: "The proofs in this computer's queue: card, date, generation, state, Bitcoin block and on how many disks.")
+
+    @Argument(help: "The id of one proof in the queue (default: every proof).")
+    var id: String?
+
+    func run() throws {
+        try ProofRun.finish(ProofCLI.status(id: id))
+    }
+}
+
+struct ProofUpgradeCommand: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "upgrade",
+        abstract: "Ask the calendars for the Bitcoin anchor now: every proof in the queue (stamp, upgrade, write onto the disks), one proof of it, or the .ots files of one card folder.")
+
+    @Argument(help: "A card folder: upgrade the .ots files in its _REPORT in place, stamp a proof manifest that has none; or the id of one proof in the queue (without it: every proof in the queue, now).")
+    var target: String?
+
+    func run() throws {
+        let target = self.target
+        try ProofRun.run { _ in
+            await ProofCLI.upgrade(target: target, log: { fputs($0 + "\n", stderr) })
+        }
+    }
+}
+
+/// Runs a `proof` command's work on a task — Ctrl+C cancels it (ProofCLI says "Cancelled.", exit 1) — with its status
+/// line on stderr, then prints what it returned and exits with its code.
+enum ProofRun {
+    final class Box: @unchecked Sendable {
+        var output: ProofCLI.Output = (lines: [], errors: [], exitCode: 1)
+        var showed = false
+    }
+
+    static func run(_ work: @escaping @Sendable (_ show: @escaping (String) -> Void) async -> ProofCLI.Output) throws {
+        let box = Box()
+        let done = DispatchSemaphore(value: 0)
+        let task = Task.detached {
+            let show: (String) -> Void = { line in
+                box.showed = true
+                fputs("\r\u{1B}[K" + line, stderr)
+            }
+            box.output = await work(show)
+            done.signal()
+        }
+        signal(SIGINT, SIG_IGN)
+        let sigint = DispatchSource.makeSignalSource(signal: SIGINT, queue: .global())
+        sigint.setEventHandler { task.cancel() }
+        sigint.resume()
+        done.wait()
+        sigint.cancel()
+        if box.showed { fputs("\r\u{1B}[K", stderr) }
+        try finish(box.output)
+    }
+
+    /// Lines on stdout, errors on stderr; a code other than 0 is the process's exit code.
+    static func finish(_ output: ProofCLI.Output) throws {
+        for line in output.lines { print(line) }
+        fflush(stdout)
+        for e in output.errors { fputs(e + "\n", stderr) }
+        if output.exitCode != 0 { throw ExitCode(output.exitCode) }
     }
 }
 

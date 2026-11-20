@@ -19,6 +19,9 @@ public indirect enum ProofJSON: Equatable {
     case null
     case bool(Bool)
     case int(Int64)
+    /// A number canonical JSON cannot hold — a fraction, an exponent, an integer past ±(2^53 − 1) — as the file writes
+    /// it. Only a lenient parse gives it (what Windows `JsonNode.Parse` reads); `Jcs.canonical` refuses it.
+    case number(String)
     case string([UInt16])
     case array([ProofJSON])
     case object([([UInt16], ProofJSON)])
@@ -38,6 +41,8 @@ public indirect enum ProofJSON: Equatable {
             return x == y
         case let (.int(x), .int(y)):
             return x == y
+        case let (.number(x), .number(y)):
+            return x == y
         case let (.string(x), .string(y)):
             return x == y
         case let (.array(x), .array(y)):
@@ -55,15 +60,17 @@ public indirect enum ProofJSON: Equatable {
 
     /// Parses `bytes` (UTF-8, no byte order mark). Anything else — a fraction or an exponent, an integer past
     /// ±(2^53 − 1), a duplicate key, nesting deeper than `maxDepth`, invalid UTF-8, text after the value, more than
-    /// `maxBytes` — is a ProofFormatError.
-    public static func parse(_ bytes: [UInt8], maxBytes: Int = ProofJSON.maxBytes) throws -> ProofJSON {
+    /// `maxBytes` — is a ProofFormatError. `lenient` (M5b: what Windows `JsonNode.Parse` reads, so a proof manifest
+    /// fails with the words Windows has): such a number is `.number` and a key twice stays twice — the manifest's own
+    /// checks (`ProofManifest.parse`) and `Jcs.canonical` then refuse them where Windows does.
+    public static func parse(_ bytes: [UInt8], maxBytes: Int = ProofJSON.maxBytes, lenient: Bool = false) throws -> ProofJSON {
         if bytes.count > maxBytes {
             throw ProofFormatError("larger than \(maxBytes / (1024 * 1024)) MB")
         }
         if bytes.count >= 3 && bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF {
             throw ProofFormatError("a byte order mark at the start")
         }
-        var reader = ProofJSONReader(bytes)
+        var reader = ProofJSONReader(bytes, lenient: lenient)
         let value = try reader.value(key: nil)
         reader.skipSpace()
         if reader.at < bytes.count {
@@ -72,8 +79,30 @@ public indirect enum ProofJSON: Equatable {
         return value
     }
 
-    public static func parse(_ data: Data, maxBytes: Int = ProofJSON.maxBytes) throws -> ProofJSON {
-        try parse([UInt8](data), maxBytes: maxBytes)
+    public static func parse(_ data: Data, maxBytes: Int = ProofJSON.maxBytes, lenient: Bool = false) throws -> ProofJSON {
+        try parse([UInt8](data), maxBytes: maxBytes, lenient: lenient)
+    }
+
+    /// The key an object has twice, as .NET finds it building the object's dictionary (members in file order, the
+    /// first one whose key came before); nil when every key is there once.
+    static func firstDuplicateKey(_ members: [([UInt16], ProofJSON)]) -> [UInt16]? {
+        if members.count < 2 { return nil }
+        if members.count <= 8 {
+            for i in 1..<members.count {
+                for j in 0..<i where members[j].0 == members[i].0 { return members[i].0 }
+            }
+            return nil
+        }
+        var seen = Set<[UInt16]>()
+        seen.reserveCapacity(members.count)
+        for m in members where !seen.insert(m.0).inserted { return m.0 }
+        return nil
+    }
+
+    /// .NET's ArgumentException for a key twice (Windows meets it at the object's first use).
+    static func duplicateKeyMessage(_ key: [UInt16]) -> String {
+        let name = String(decoding: key, as: UTF16.self)
+        return "An item with the same key has already been added. Key: \(name) (Parameter 'key')"
     }
 }
 
@@ -140,10 +169,15 @@ public extension ProofJSON {
 /// The parser behind `ProofJSON.parse`: one pass over the bytes, recursive for arrays and objects (at most `maxDepth`).
 struct ProofJSONReader {
     let bytes: [UInt8]
+    /// ProofJSON.parse's `lenient`: numbers canonical JSON cannot hold become `.number`, a key twice stays twice.
+    let lenient: Bool
     var at = 0
     var depth = 0
 
-    init(_ bytes: [UInt8]) { self.bytes = bytes }
+    init(_ bytes: [UInt8], lenient: Bool = false) {
+        self.bytes = bytes
+        self.lenient = lenient
+    }
 
     func error(_ what: String) -> ProofFormatError {
         ProofFormatError("\(what) at byte \(at)")
@@ -182,7 +216,7 @@ struct ProofJSONReader {
             return .null
         default:
             if c == 0x2D || ProofJSONReader.isDigit(c) {
-                return .int(try number(key: key))
+                return try number(key: key)
             }
             throw error("an unexpected character")
         }
@@ -245,7 +279,7 @@ struct ProofJSONReader {
             skipSpace()
             guard at < bytes.count, bytes[at] == 0x22 else { throw error("expected a key in an object") }
             let key = try string()
-            if !seen.insert(key).inserted {
+            if !lenient && !seen.insert(key).inserted {
                 throw error("the key \"\(String(decoding: key, as: UTF16.self))\" twice")
             }
             skipSpace()
@@ -270,8 +304,8 @@ struct ProofJSONReader {
     }
 
     /// `-? (0 | [1-9][0-9]*)` within ±(2^53 − 1); a fraction or an exponent is refused (canonical JSON of the proof
-    /// has integers only).
-    mutating func number(key: [UInt16]?) throws -> Int64 {
+    /// has integers only) — lenient: any RFC 8259 number, the ones canonical JSON cannot hold as `.number`, as written.
+    mutating func number(key: [UInt16]?) throws -> ProofJSON {
         let start = at
         var negative = false
         if bytes[at] == 0x2D {
@@ -300,14 +334,18 @@ struct ProofJSONReader {
                 at += 1
             }
         }
+        var integer = true
         if at < bytes.count {
             let c = bytes[at]
             if c == 0x2E || c == 0x65 || c == 0x45 {
-                throw error("a number that is not an integer (a fraction or an exponent)")
+                if !lenient { throw error("a number that is not an integer (a fraction or an exponent)") }
+                try fractionAndExponent()
+                integer = false
             }
         }
-        if tooBig {
+        if tooBig || !integer {
             let text = String(decoding: bytes[start..<at], as: UTF8.self)
+            if lenient { return .number(text) }
             if let key {
                 // The words of the manifest's own range checks (Windows `ProofManifest.Int`).
                 throw ProofFormatError("\"\(String(decoding: key, as: UTF16.self))\" is out of range (\(text))")
@@ -315,7 +353,26 @@ struct ProofJSONReader {
             throw ProofFormatError("an integer out of range (\(text)) at byte \(start)")
         }
         let v = Int64(magnitude)
-        return negative ? -v : v
+        return .int(negative ? -v : v)
+    }
+
+    /// RFC 8259 after the integer part: `(. digit+)? ([eE] [+-]? digit+)?`.
+    mutating func fractionAndExponent() throws {
+        if at < bytes.count && bytes[at] == 0x2E {
+            at += 1
+            guard at < bytes.count, ProofJSONReader.isDigit(bytes[at]) else {
+                throw error("a number without digits after its point")
+            }
+            while at < bytes.count && ProofJSONReader.isDigit(bytes[at]) { at += 1 }
+        }
+        if at < bytes.count && (bytes[at] == 0x65 || bytes[at] == 0x45) {
+            at += 1
+            if at < bytes.count && (bytes[at] == 0x2B || bytes[at] == 0x2D) { at += 1 }
+            guard at < bytes.count, ProofJSONReader.isDigit(bytes[at]) else {
+                throw error("a number without digits in its exponent")
+            }
+            while at < bytes.count && ProofJSONReader.isDigit(bytes[at]) { at += 1 }
+        }
     }
 
     /// A string at `at` (its opening quote): escapes resolved to UTF-16 code units as written (`\ud800` stays one lone

@@ -262,11 +262,13 @@ public struct ProofManifest: Equatable {
     /// ProofFormatError for anything that is not a version-1 proof manifest — also for what canonical JSON or the
     /// Merkle tree could not hold (a size past 2^53 − 1, a hash with anything after its hex digits, a string with a
     /// lone surrogate), so nothing later fails on a parsed manifest. Keys it does not know (a later writer's) are
-    /// ignored. The messages are Windows `ProofManifest.Parse`'s.
+    /// ignored. The messages are Windows `ProofManifest.Parse`'s: the JSON is read as Windows `JsonNode.Parse` reads it
+    /// (`lenient`), so a number past 2^53 − 1, a fraction or a key twice fails in the manifest's own checks, with their
+    /// words (M5b).
     public static func parse(_ bytes: [UInt8]) throws -> ProofManifest {
         let json: ProofJSON
         do {
-            json = try ProofJSON.parse(bytes)
+            json = try ProofJSON.parse(bytes, lenient: true)
         } catch let e as ProofFormatError {
             throw ProofFormatError("The proof file is not valid: " + e.reason)
         }
@@ -275,9 +277,12 @@ public struct ProofManifest: Equatable {
 
     public static func parse(_ data: Data) throws -> ProofManifest { try parse([UInt8](data)) }
 
-    /// Parse of the JSON already read (the verifier keeps it for its canonical check).
+    /// Parse of the JSON already read (the verifier keeps it for its canonical check). An object with a key twice fails
+    /// where Windows first reads a member of it (.NET builds the object's dictionary then): the top level at once, `tool`,
+    /// `card` and `merkle` only when their members are read, after `files`, `excluded` and `mhl`.
     public static func parse(_ json: ProofJSON) throws -> ProofManifest {
         guard case .object = json else { throw ProofFormatError("The proof is not a JSON object.") }
+        try keysOnce(json)
         if try str(json, "format") != formatName { throw ProofFormatError("Not an mmMover proof (format).") }
         let version = try int(json, "version", Int64.min, Int64.max)
         if version > Int64(currentVersion) {
@@ -291,6 +296,7 @@ public struct ProofManifest: Equatable {
         var files: [ProofFile] = []
         for item in try arr(json, "files") {
             guard case .object = item else { throw ProofFormatError("files[] entry") }
+            try keysOnce(item)
             let path = try str(item, "path")
             let size = try int(item, "size", 0, maxSafeInteger)
             let sha = try prefixed(item, "sha256", "sha256:", 64)
@@ -304,6 +310,7 @@ public struct ProofManifest: Equatable {
         if json["excluded"] != nil {
             for item in try arr(json, "excluded") {
                 guard case .object = item else { throw ProofFormatError("excluded[] entry") }
+                try keysOnce(item)
                 excluded.append(ProofExcluded(path: try str(item, "path"), reason: try str(item, "reason")))
             }
         }
@@ -311,6 +318,7 @@ public struct ProofManifest: Equatable {
         var mhl: [ProofMhl] = []
         for item in try arr(json, "mhl") {
             guard case .object = item else { throw ProofFormatError("mhl[] entry") }
+            try keysOnce(item)
             let destination = try int(item, "destination", 1, maxInt32)
             let path = try str(item, "path")
             let sha = try prefixed(item, "sha256", "sha256:", 64)
@@ -320,17 +328,20 @@ public struct ProofManifest: Equatable {
         // In the order Windows reads them (its object initializer), so the first problem gives the same message.
         let id = try str(json, "id")
         let created = try str(json, "created")
+        try keysOnce(tool)
         let toolName = try str(tool, "name")
         let toolVersion = try str(tool, "version")
         let toolPlatform = try str(tool, "platform")
         let machine = try str(json, "machine")
+        try keysOnce(card)
         let cardName = try str(card, "name")
         let date = try str(card, "date")
         let source = try str(card, "source")
         let generation = try int(card, "generation", 1, maxInt32)
         var project: String? = nil
         if let v = card["project"], !v.isNull { project = try str(card, "project") }
-        guard let complete = json["complete"]?.boolValue else { throw ProofFormatError("Missing or wrong \"complete\".") }
+        let complete = try completeFlag(json)
+        try keysOnce(merkle)
         let count = try int(merkle, "count", 0, maxInt32)
         let rootHex = try prefixed(merkle, "root", "sha256:", 64)
 
@@ -351,11 +362,48 @@ public struct ProofManifest: Equatable {
         return s
     }
 
-    /// An integer member in [min, max].
+    /// An integer member in [min, max] (Windows `TryGetValue<long>`: an integer past 2^53 − 1 within a long is out of
+    /// range, a fraction, an exponent or a number past a long is no integer at all).
     static func int(_ o: ProofJSON, _ key: String, _ min: Int64, _ max: Int64) throws -> Int64 {
-        guard let v = o[key], case let .int(n) = v else { throw ProofFormatError("Missing or wrong \"\(key)\".") }
+        let n: Int64
+        switch o[key] {
+        case let .int(v)?:
+            n = v
+        case let .number(text)?:
+            guard let v = Int64(text) else { throw ProofFormatError("Missing or wrong \"\(key)\".") }
+            n = v
+        default:
+            throw ProofFormatError("Missing or wrong \"\(key)\".")
+        }
         guard n >= min && n <= max else { throw ProofFormatError("\"\(key)\" is out of range (\(n)).") }
         return n
+    }
+
+    /// The words Windows `ProofManifest.Parse` wraps an exception of System.Text.Json in.
+    static let notValid = "The proof file is not valid: "
+
+    /// Windows `o["complete"]?.GetValue<bool>() ?? throw new FormatException("complete")`: missing or null is
+    /// "complete"; a value that is no boolean fails in System.Text.Json, with its words (M5b: the verifier's line).
+    static func completeFlag(_ o: ProofJSON) throws -> Bool {
+        guard let v = o["complete"] else { throw ProofFormatError("complete") }
+        switch v {
+        case let .bool(b):
+            return b
+        case .null:
+            throw ProofFormatError("complete")
+        case .string:
+            throw ProofFormatError(notValid + "An element of type 'String' cannot be converted to a 'System.Boolean'.")
+        case .int, .number:
+            throw ProofFormatError(notValid + "An element of type 'Number' cannot be converted to a 'System.Boolean'.")
+        case .array, .object:
+            throw ProofFormatError(notValid + "The node must be of type 'JsonValue'.")
+        }
+    }
+
+    /// An object with a key twice fails where Windows first reads a member of it (.NET builds its dictionary then).
+    static func keysOnce(_ o: ProofJSON) throws {
+        guard case let .object(members) = o, let key = ProofJSON.firstDuplicateKey(members) else { return }
+        throw ProofFormatError(notValid + ProofJSON.duplicateKeyMessage(key))
     }
 
     static func obj(_ o: ProofJSON, _ key: String) throws -> ProofJSON {
