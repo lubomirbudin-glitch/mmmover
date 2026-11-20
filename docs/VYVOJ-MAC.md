@@ -7,6 +7,17 @@ Formát záznamu: `datum — co se změnilo (commit / verze)`.
 
 ## Naplánováno
 
+- **Offload Proof pro Mac (2026-11-19, stejný formát jako Windows 0.12.0):** Windows zapisuje `files[].sha256` v reportu
+  (a v `hashAlgorithms`), `sha256` v blokovém manifestu, `_REPORT/offload_proof.json` (kanonický JSON RFC 8785, Merkle
+  kořen RFC 6962) a vedle něj `.ots` (OpenTimestamps) — přesný formát je v [FORMATY.md](FORMATY.md) (oddíl „Offload
+  Proof“), návrh ve [`windows/docs/superpowers/specs/2026-11-19-offload-proof-design.md`](../windows/docs/superpowers/specs/2026-11-19-offload-proof-design.md),
+  nezávislý ověřovač a testovací vektory v [`shared/proof/`](../shared/proof/README.md). Mac má zatím `sha256` ignorovat
+  (už ignoruje) a zálohu s důkazem ověřit jako každou jinou; úkol: SHA-256 na vlastním vlákně v jediném čtení karty
+  (CryptoKit — na Apple Silicon i Intel s instrukcemi SHA je to rychlejší než čtení karty), na Intel Macech bez instrukcí
+  SHA (rychlost SHA-256 pod rychlostí karty) volba počítat SHA-256 až ve zpětném čtení; manifest, Merkle strom a `.ots`
+  stejné bajty jako Windows (vektory `shared/proof/vectors.json`), fronta v `~/Library/Application Support/`, chip
+  „Proof“ a přepínač v Nastavení, CLI `--no-proof` a `proof verify | status | upgrade`. Mac pak do ROZDILY.md.
+
 - **Ověřit build pro Apple Silicon na skutečném Macu s M procesorem (2026-10-14):** CI na virtuálním M1 vynechává
   `MacHardwareTests.testStartupVolumeIsInternalWithAProduct` a `testEveryUsbDeviceLinksToASocketInThePortList` (VM má
   virtuální USB klávesnici a digitizér na portech 9/10 — seznam portů je bere jako „neznámý typ“, řádek disku jako

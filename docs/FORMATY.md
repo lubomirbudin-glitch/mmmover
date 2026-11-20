@@ -33,7 +33,10 @@ a Mac mají české texty). Slovník pojmů: [ui-text-glossary.md](ui-text-gloss
         <karta>_clips.csv             seznam klipů (Windows od 0.3.0)
         <karta>_clips.ale             seznam klipů pro Avid (Windows od 0.3.0, když je zapnutý)
         offload-manifest.jsonl        blokový manifest (Windows od 0.6.0, Mac od 0.7.0) — viz „Blokový manifest“
+        offload_proof.json            manifest důkazu (Windows od 0.12.0, Mac naplánováno) — viz „Offload Proof“
+        offload_proof.json.ots        časové razítko OpenTimestamps manifestu (stejně)
         offload_report_0002.json      jen po doplnění (generace 2, 3 …): report jen nových souborů
+        offload_proof_0002.json       jen po doplnění s důkazem (+ `.ots` vedle)
         offload_report_0002.txt
         <karta>_report_0002.html
         <karta>_report_0002.pdf
@@ -112,7 +115,7 @@ Po doplnění se prodlouží stejně jako `<karta>.xxh64` — je to třetí soub
 | `setAside[]` | objekt? | jen Windows od 0.5.0 a jen u opravy: `destination` (index cíle), `path` (cesta na kartě), `movedTo` (`_REPORT/neshoda_NNNN/<path>`) — nesouhlasné kopie přesunuté před novou; chybí, když žádná nebyla |
 | `project` | string? | jen Windows od 0.4.0: projekt, ve kterém se karta kopírovala; chybí bez projektu. Doplnění zapíše projekt dřívější zálohy, ne projekt zobrazený v aplikaci. Denní report ho ukáže, když ho mají všechny karty dne stejný |
 | `hashAlgorithm` | string | `xxh64` (vždy, i s MD5 — Mac ho jen zobrazí) |
-| `hashAlgorithms` | string[]? | jen Windows od 0.3.0 a jen když nejsou jen xxh64: `["xxh64", "md5"]` |
+| `hashAlgorithms` | string[]? | jen Windows od 0.3.0 a jen když nejsou jen xxh64: `["xxh64", "md5"]`; od 0.12.0 s Offload Proof i `"sha256"` (`["xxh64", "sha256"]`, `["xxh64", "md5", "sha256"]`). Mac `sha256` ignoruje |
 | `cardName`, `date`, `source`, `sourceFilesystem` | string | |
 | `started`, `copyFinished`, `finished` | datum | |
 | `verified` | bool | proběhlo ověření (Windows od 0.6.0 i během proxy — metoda v `destinations[].verifyMethod`) |
@@ -122,7 +125,7 @@ Po doplnění se prodlouží stejně jako `<karta>.xxh64` — je to třetí soub
 | `verifyNotes[]` | string? | Windows od 0.6.0, Mac od 0.7.0: volný text (Windows do 0.8.0 česky, od 0.9.0 anglicky; Mac anglicky) — nestabilní čtení (blok se při opakovaném čtení lišil), stejný blok špatně na více cílech a co dává karta při novém čtení; Mac navíc „Verified by reading through the macOS cache: …“ (soubor zůstal v paměti i po `msync(MS_INVALIDATE)`, data mohla přijít z paměti) |
 | `totalFiles`, `totalBytes` | číslo | |
 | `destinations[]` | objekt | `root`, `cardPath`, `filesystem`, `filesOK`, `filesFailed`, volitelně `unbuffered` (jen `false`, jen Windows); Windows od 0.6.0 a Mac od 0.7.0 `verifyMethod` (`verify-in-proxy` = čtením pro proxy a dorovnáním, `read-back` = zpětným čtením; chybí bez ověření), `verifyNote` (Windows do 0.8.0 česky, jinak anglicky: proč zpětným čtením, i když běželo ověření během proxy) a `volumeSerial` (`1A2B-3C4D`, sériové číslo svazku cíle — podle něj se cíl pozná i pod jiným písmenem, R12; Mac čte od 0.3.0 a zapisuje od 0.7.0 (úkol 65 — dřívější Mac reporty ho nemají): u FAT/exFAT/NTFS stejně jako Windows, když smí číst boot sektor, jinak a u ostatních FS `uuid:<UUID svazku>`) |
-| `files[]` | objekt | `path`, `size`, `modified`, `xxh64`?, `xxh128`? (XXH3-128, 32 malých hex, Windows od 0.6.0), `md5`? (32 malých hex, jen s MD5, Windows od 0.3.0), `sourceError`? (též `card changed while paused` — karta se během pauzy vyměnila nebo vytáhla, zbylé soubory se nekopírovaly), `destinations[]` (stav pro každý cíl), `errors[]` (chyba nebo `null` pro každý cíl; anglicky — HTML je zobrazí česky), `rewritten[]`? (jen oprava, Windows od 0.5.0: pro každý cíl `true` = nová kopie, `false` = dobrá kopie jen znovu přečtená) |
+| `files[]` | objekt | `path`, `size`, `modified`, `xxh64`?, `xxh128`? (XXH3-128, 32 malých hex, Windows od 0.6.0), `md5`? (32 malých hex, jen s MD5, Windows od 0.3.0), `sha256`? (64 malých hex SHA-256 souboru z karty, Windows od 0.12.0 jen s Offload Proof; chybí, když je důkaz vypnutý nebo soubor nešel přečíst; Mac ignoruje), `sourceError`? (též `card changed while paused` — karta se během pauzy vyměnila nebo vytáhla, zbylé soubory se nekopírovaly), `destinations[]` (stav pro každý cíl), `errors[]` (chyba nebo `null` pro každý cíl; anglicky — HTML je zobrazí česky), `rewritten[]`? (jen oprava, Windows od 0.5.0: pro každý cíl `true` = nová kopie, `false` = dobrá kopie jen znovu přečtená) |
 | `skipped[]` | string | vynechané systémové položky |
 | `clips[]` | objekt | `clip` {`name`, `path`, `format`, `segments`, `bytes`, `isCameraProxy`}, `info`?, `probeError`?, `proxyStatus`, `proxyPath`? (relativní k složce karty, např. `_PROXY/idle/1.mov` — viz „Proxy ve složkách jako na kartě“), `proxyNote`?, `proxySeconds`?, `lut`? {`source`, `id`, `name`, `reason`} (použitý LUT a proč; Windows od plánu 5, Mac zatím ignoruje), `content`? {`state` (`ok` / `warn`), `kind` (`decode`, `audio`, `timestamps`, `frames`, `end`), `frame`, `timecode`, `message`, `framesDecoded`, `framesExpected`} (Windows od 0.6.0, Mac od 0.7.0: co dekodér hlásil při tvorbě proxy — `warn` je vada souboru z kamery, kopie přitom souhlasí s kartou; chybí u klipu bez proxy) |
 | `proxy` | objekt? | nastavení proxy (`enabled`, `height`, `codec`, `bitrateMbps`, `lutPath`, `lutMode` (`auto`/`builtin`/`custom`/`none`), `lutBuiltin`, `lutFallback`, `burnFilename`, `burnTimecode`, `audio`, `skipCameraProxies`, `skipLighterSources` (Windows od 0.5.1, Mac po 0.7.0 D6), `copyToAllDestinations`, `frameAspect`, `frameScale`; jen Windows, volitelně `extraFolder`, od 0.4.0 `lutRules` a `brawGen4ToGen5`, od 2026-10-09 `hardwareDecode` — viz níže) |
@@ -236,7 +239,7 @@ přerušený pádem se při čtení přeskočí a další zápis začne na nové
 | `kind` | `file` = soubor je na svém místě na tomto cíli; `part` = kontrolní bod souboru, který se zapisuje pod `.<jméno>.offload-part` |
 | `gen` | generace ASC MHL, kterou kopie psala |
 | `path`, `size`, `modified` | cesta na kartě (`/`), velikost a čas souboru na kartě (UTC na sekundy) |
-| `xxh64`, `xxh128`, `md5`? | jen `file`: součty karty (`md5` jen s MD5) |
+| `xxh64`, `xxh128`, `md5`?, `sha256`? | jen `file`: součty karty (`md5` jen s MD5, `sha256` jen s Offload Proof — Windows od 0.12.0; navázání po pádu ho tak zná i u souborů, které už nečte; chybně tvarovaný `sha256` (ne 64 hex) se při čtení zahodí, záznam zůstane a soubor jde z důkazu s důvodem `hash`) |
 | `blockSize` | velikost bloku (16 MiB = blok kopie) |
 | `blocks[]` | XXH3-64 bloků (16 malých hex): u `file` všech, u `part` bloků od `first` |
 | `first` | jen `part`: index prvního bloku v `blocks` (záznam s `first` 0 začíná nový pokus) |
@@ -310,6 +313,106 @@ selhaly — jako další generace ve stejné složce karty (jen GUI, tlačítko 
   `action="verified"` (`hashdate` = čas opravy), `<comment>Offload oprava: 1 soubor znovu z E:\</comment>` (Windows od 0.9.0 `Offload repair: 1 file copied again from E:\`, 0.10.x `ArcLoader repair: …`, od 0.11.0 `mmMover repair: …`; volný text);
 - report `offload_report_NNNN.*` s `kind: "repair"`, `rewritten`, `setAside`; `<karta>.xxh64` (a `.md5`) se přepíše bez
   opakovaných řádků; nic k opravě = nic se nezapíše.
+
+## Offload Proof — `_REPORT/offload_proof.json` a `.ots` (Windows od 0.12.0, Mac naplánováno)
+
+Důkaz, že soubory generace existovaly přesně v tomto stavu nejpozději v čase T. Ven z počítače odchází jen 32bajtový
+hash (s náhodným nonce), nikdy obsah ani názvy. Návrh: [`windows/docs/superpowers/specs/2026-11-19-offload-proof-design.md`](../windows/docs/superpowers/specs/2026-11-19-offload-proof-design.md),
+zadání: [OFFLOAD-PROOF.md](OFFLOAD-PROOF.md). Nezávislý ověřovač bez .NET: [`shared/proof/`](../shared/proof/README.md).
+
+- **SHA-256 není v ASC MHL.** Oficiální schéma ASC MHL v2 (`xsd/ASCMHL.xsd`) zná jen c4, md5, sha1, xxh128, xxh3, xxh64;
+  `<sha256>` by neprošlo schématem a žádný nástroj by ho nečetl. SHA-256 je jen v `files[].sha256` reportu, v blokovém
+  manifestu a v manifestu důkazu. ASC MHL a seznamy `.xxh64`/`.md5` se důkazem nemění.
+- **Vypnutý důkaz = SHA-256 se nepočítá vůbec** (ani při doplnění, navázání a opravě); zapnutý ho počítá vlastní vlákno
+  v jediném čtení karty, zpětné čtení cílů ho nepočítá (porovnává xxh64 a MD5 jako dosud). Oprava („Zkopírovat znovu“)
+  nový důkaz nezakládá (data jsou tatáž).
+- **Kdy se důkaz zakládá:** jakmile je záznam generace hotový — ASC MHL zapsaná a ověření skončilo (s ověřením během proxy
+  až po commitu fáze 2). Nikdy u zrušené kopie, při výměně karty během pauzy, u opravy ani když fáze 2 nic neověřila.
+  Navázání po pádu generaci dokončí a důkaz založí. Bez ověření (vypnuté) důkaz kryje zapsané soubory (hashe jsou ze čtení karty).
+- **Které soubory:** každý soubor generace se `sha256`, který report nevede jako selhaný (dobrá kopie na každém cíli).
+  Ostatní jdou do `excluded` a `complete` = false. Bez jediného souboru se důkaz nezakládá. Doplnění zapíše
+  `offload_proof_NNNN.json` (NNNN = generace MHL) a `.ots` vedle; dřívější důkaz se nikdy nepřepíše.
+- Chyba důkazu nikdy neshodí ani nezdrží offload: je to řádek v logu a červený chip; „Safe to eject“ / „Safe to format“
+  se kvůli ní nemění.
+
+### Manifest `offload_proof.json` (verze 1)
+
+UTF-8 bez BOM, bez koncového řádku, **přesně** kanonická serializace RFC 8785 (klíče seřazené podle UTF-16 jednotek, bez
+mezer; jen řetězce, celá čísla, `true/false`, pole a objekty). Ověřovač odmítne manifest, který není kanonický.
+
+| Klíč | Typ | Obsah |
+|---|---|---|
+| `format` | string | `"mmmover-proof"` |
+| `version` | int | `1` |
+| `id` | string | UUID malými písmeny s pomlčkami |
+| `created` | string | čas stroje `yyyy-MM-ddTHH:mm:ssZ` (UTC) — jen informativně, důkazní čas je z ukotvení |
+| `tool` | object | `name` `"mmMover"`, `version` (`OffloadVersion.String`), `platform` `"windows"` |
+| `machine` | string | jméno počítače |
+| `card` | object | `name`, `date` (`yyyy-MM-dd` složky dne), `source` (jako report), `generation` (int, 1 = celá kopie), `project`? (chybí bez projektu) |
+| `complete` | bool | každý soubor generace je ve `files` |
+| `files` | array | seřazené podle `path` (ordinálně): `path` (relativní, `/`), `size` (int), `sha256` `"sha256:<64 hex>"`, `xxh64` `"xxh64:<16 hex>"`, `xxh128`? `"xxh128:<32 hex>"` |
+| `excluded` | array? | jen když `complete` = false: `path`, `reason` (`"source"` karta nedala soubor, `"destination"` není dobrá kopie na každém cíli, `"hash"` chybí sha256 — i když ho blokový manifest měl chybně tvarovaný) |
+| `merkle` | object | `scheme` `"rfc6962-sha256"`, `count` (int = počet `files`), `root` `"sha256:<64 hex>"` |
+| `mhl` | array | ke každému cíli, kde generace ASC MHL existuje: `destination` (int, 1…), `path` (`ascmhl/<soubor>.mhl`), `sha256` `"sha256:<hex>"` |
+
+**Merkle strom (RFC 6962 §2.1):** data listu = 32 bajtů SHA-256 souboru ‖ velikost jako 8 bajtů big-endian; list =
+SHA-256(0x00 ‖ data), uzel = SHA-256(0x01 ‖ L ‖ R); MTH pro n > 1 dělí na k = největší mocnina dvou < n; prázdný strom
+SHA-256(""). Listy seřazené podle SHA-256 souboru (bajtově), pak podle velikosti; stejný soubor dvakrát = dva listy.
+Testovací vektory: kořeny z Certificate Transparency (1–8 listů) a z nezávislé implementace v Pythonu (0, 1, 2, 3, 2001
+listů) v [`shared/proof/vectors.json`](../shared/proof/vectors.json).
+
+### `offload_proof.json.ots`
+
+Standardní soubor OpenTimestamps (DetachedTimestampFile, major verze 1, file hash op SHA-256 přes bajty manifestu), takže
+`ots verify offload_proof.json.ots` funguje oficiálním klientem. Stamp: digest manifestu → `append(16 náhodných bajtů)` →
+`sha256` → commitment, ten jde POST `<kalendář>/digest` (tělo 32 bajtů, `Accept: application/vnd.opentimestamps.v1`);
+odpovědi se sloučí do jednoho stromu. Kalendáře (stejné agregátory jako oficiální klient): `https://a.pool.opentimestamps.org`,
+`https://b.pool.opentimestamps.org`, `https://a.pool.eternitywall.com`, `https://ots.btc.catallaxy.com`; ≥ 2 musí přijmout.
+Upgrade: ke každé `PendingAttestation(uri)` GET `<uri>/timestamp/<hex commitment>` (200 = sloučit, 404 = ještě ne),
+jen z kalendářů `https://*.calendar.opentimestamps.org`, `*.calendar.eternitywall.com`, `*.calendar.catallaxy.com`.
+Serializace jako referenční `python-opentimestamps` (atestace a operace seřazené, `0xff` před každou položkou kromě
+poslední, atestace `0x00` + 8bajtový tag + varbytes payload; tagy Pending `83dfe30d2ef90c8e`, Bitcoin `0588960d73d71901`;
+LEB128 varuint). Operace SHA-256, SHA-1, RIPEMD-160 (staré oficiální soubory ji používají), append, prepend; Keccak,
+reverse a hexlify čtečka odmítne. Limity: hloubka 255 operací, zpráva a argument 4096 B, payload 8192 B, uri 1000 znaků.
+
+**Soubor v záloze, který se smí nahradit** (vedle `<karta>.xxh64`/`.md5`, `ascmhl_chain.xml` a odvozených souborů): `.ots`
+se nahradí jen **striktně úplnějším** souborem — nový míří na stejný digest a obsahuje každou atestaci starého (upgrade jen
+přidává) — a jen ve složce karty, kde už leží manifest s tímto SHA-256 (platí i pro `mmmover proof upgrade <složka karty>`;
+cizí `.ots`, `.ots` upraveného manifestu a `.ots` bez manifestu zůstanou). Jinak se nechá a zapíše se do logu.
+
+### Hlavičky bloků a ověření
+
+Bitcoin atestace se ověří proti hlavičce bloku (merkle root z bajtů 36–68 = zpráva v uzlu, čas = bajty 68–72 LE) ze zdrojů
+`https://blockstream.info/api` a `https://mempool.space/api`; oba musí vrátit stejnou hlavičku. Hlavička platí, jen když
+nese **proof-of-work** jako v Bitcoin Core: dvojitý SHA-256 hlavičky (little-endian) ≤ cíl z `nBits` (bajty 72–76) a cíl
+není lehčí než limit Bitcoinu 2^224 − 1; hash hlavičky musí navíc sedět s hashem bloku. Jeden dostupný zdroj = ověřeno
+s varováním, žádný = „not checked“. **Známé omezení:** práci s obtížností 1 lze stále levně „vytěžit“, takže skutečnou
+ochranou jsou dva nezávislé zdroje, které se shodnou (nebo vlastní uzel, případně oficiální klient `ots` s uzlem).
+
+`mmmover proof verify <soubor | složka karty> [--offline]` a nezávislý `shared/proof/verify_proof.py` (Python ≥ 3.8,
+jen standardní knihovna) kontrolují SHA-256 souboru proti manifestu (jiná cesta = jen poznámka o přejmenování), Merkle
+kořen a `count`, kanonický zápis manifestu, digest v `.ots` a Bitcoin atestaci. **Návratový kód: 0 = OK, 1 = FAILED**
+(nesedí hash, kořen, digest, poškozený `.ots`, nesedící blok), **2 = NOT YET** (jen pending, `--offline`, `.ots` ještě není,
+zdroje hlaviček nedostupné či v rozporu).
+
+### Fronta `%APPDATA%\mmMover\proof\` (jen tento počítač)
+
+`<id>.json` (+ `<id>.ots`, poslední známý strom): `id`, `created`, `manifest` (jméno souboru), `digest` (hex), `cardName`,
+`date`, `generation`, `cardPaths[]`, `volumeSerials[]`, `state`, `stampedAt`?, `nextCheck`?, `tries`, `lastError`?,
+`bitcoin`? {`height`, `time`}, `written[]` (per cíl `"none"` | `"pending"` | `"complete"`); neznámé klíče se zachovají.
+Zápisy pod pojmenovaným mutexem `Local\mmMover-proof-store` (síť nikdy pod ním), zápis `.ots` na disky pod
+`Local\mmMover-proof-disks`.
+
+| Stav | Chip na kartě úlohy | Kdy dál |
+|---|---|---|
+| `queued` | šedý „Proof: waiting for network“ | stamp znovu za 1, 2, 5, 10, 30, pak každých 60 min |
+| `pending` | šedý „Proof: anchoring“ | upgrade každou hodinu prvních 24 h od stampu, pak denně |
+| `complete` | zelený „Proof: anchored“ (tooltip: blok N); ještě ne na všech discích oranžový „Proof: anchored · on N of M disks“ | zápis na chybějící disky při každém běhu služby (10 min) a po připojení disku |
+| `failed` | červený „Proof: not created“ + důvod v tooltipu | nic (manifest se nezapsal) |
+
+`complete` jen když kontrola hlavičky dá Verified, nebo NotChecked (průzkumníci nedostupní); Mismatch (kalendář vydal
+Bitcoin atestaci, která nesedí s blokem) nechá záznam `pending`. Částečné zapečetění (manifest se zapsal jen na některé
+disky) nechá v záznamu všechny cíle reportu; `.ots` se zapíše jen tam, kde manifest je, a chip říká „on N of M disks“.
 
 ## Report ověření (Windows od 0.2.0, Mac od 0.3.0)
 
@@ -441,6 +544,9 @@ nebo formát `arriraw`) je to TC denní doby. Stopáž = součet `info.duration`
   při kopii, nebo první cíl. Jiná hodnota (z novější verze) se zachová a čte jako `"fastest"`. CLI `--primary N` (1…počet cílů) má přednost.
 - `hash` (`"xxh64"` | `"both"`, výchozí `"xxh64"`, Windows od 0.3.0): kontrolní součty kopie; `both` = xxh64 + MD5. Jiná
   hodnota (z novější verze) se zachová a čte jako `xxh64`.
+- `proof` (Windows od 0.12.0, součást projektu): `enabled` (bool, výchozí `true`) — Offload Proof: počítat SHA-256 a po
+  každé kopii založit důkaz (viz „Offload Proof“); vypnuto = SHA-256 se nepočítá vůbec. Nastavení → Verification, CLI
+  `--no-proof`. Neznámé klíče sekce se zachovají, nečitelná sekce se zapíše zpět beze změny; do nového projektu se kopíruje.
 - `outputs` (Windows od 0.3.0): `dayReport` (bool, `true`) — denní report po každé úloze; `clipListCsv` (bool, `true`),
   `clipListAle` (bool, `false`) — seznamy klipů; `localReport` (bool, `true`, úkol 2026-10-09) — kopie reportu karty na
   tomto počítači; `localReportFolder` (string | `null` = `<Dokumenty>\mmMover reports`; dříve `ArcLoader reports`, `Offload reports` a (do 0.8.0) `Offload reporty`, ty se při čtení prohledávají také). Neznámé klíče sekce se zachovají.
@@ -449,7 +555,7 @@ nebo formát `arriraw`) je to TC denní doby. Stopáž = součet `info.duration`
   karty je skrytý soubor `.offload-origin` (`<started UTC>|<cardName>|<source>` z `offload_report.json`): podle něj se jiná
   karta stejného jména téhož dne uloží do `<karta>_2`, `_3` … (pravidlo jako na cíli); složka bez něj se nikdy nepoužije.
 - Projekty (Windows od 0.4.0): klíče profilu na horní úrovni (`destRoots`, `verify`, `analyzeClips`, `hash`, `naming`,
-  `outputs`, `notify`, `proxy`, `autoDrives`) jsou profil „Bez projektu“; `projects` je pole pojmenovaných profilů stejného tvaru
+  `outputs`, `notify`, `proxy`, `autoDrives`, od 0.12.0 `proof`) jsou profil „Bez projektu“; `projects` je pole pojmenovaných profilů stejného tvaru
   s klíčem `name` (oříznutý, 1–60 znaků, jedinečný bez ohledu na velikost písmen, „Bez projektu“ vyhrazené);
   `activeProject` je jméno nebo `null` (jméno neexistujícího projektu se při čtení změní na `null`; zachová se jen
   jméno projektu uloženého beze změny — položka, kterou tato verze nečte — a platí „Bez projektu“; `activeProject`
