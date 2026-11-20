@@ -156,9 +156,13 @@ final class RedirectGuard: NSObject, URLSessionTaskDelegate, @unchecked Sendable
     func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
                     newRequest request: URLRequest) async -> URLRequest? {
         if let next = request.url, OtsHTTP.followsRedirect(from: asked, to: next) { return request }
-        lock.lock()
-        refused = request.url?.host ?? "?"
-        lock.unlock()
+        refuse(request.url?.host ?? "?")
         return nil
+    }
+
+    private func refuse(_ host: String) {
+        lock.lock()
+        refused = host
+        lock.unlock()
     }
 }
