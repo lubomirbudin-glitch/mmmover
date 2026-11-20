@@ -1,5 +1,6 @@
 using System.Buffers.Binary;
 using System.Net;
+using System.Numerics;
 using System.Security.Cryptography;
 using System.Text;
 
@@ -18,6 +19,9 @@ public sealed record BlockHeader(ulong Height, byte[] Raw)
     /// nTime (bytes 68–72, little-endian seconds), UTC.
     public DateTime Time => DateTimeOffset.FromUnixTimeSeconds(BinaryPrimitives.ReadUInt32LittleEndian(Raw.AsSpan(68, 4))).UtcDateTime;
 
+    /// nBits (bytes 72–76, little-endian): the target the block's hash had to meet, in Bitcoin's compact form.
+    public uint Bits => BinaryPrimitives.ReadUInt32LittleEndian(Raw.AsSpan(72, 4));
+
     /// The block hash as explorers print it: double SHA-256, bytes reversed, lower-case hex.
     public string HashHex
     {
@@ -27,6 +31,30 @@ public sealed record BlockHeader(ulong Height, byte[] Raw)
             Array.Reverse(h);
             return Convert.ToHexStringLower(h);
         }
+    }
+
+    /// The target a compact nBits encodes, as Bitcoin Core's SetCompact: mantissa (the low 23 bits) × 256^(exponent − 3),
+    /// exponent = the high byte. Null for a negative (bit 0x00800000), zero or overflowing (over 256 bits) one — a
+    /// header with such an nBits has no valid proof of work.
+    public static BigInteger? Target(uint bits)
+    {
+        int exponent = (int)(bits >> 24);
+        uint mantissa = bits & 0x007fffff;
+        bool negative = mantissa != 0 && (bits & 0x00800000) != 0;
+        bool overflow = mantissa != 0 && (exponent > 34 || (mantissa > 0xff && exponent > 33) || (mantissa > 0xffff && exponent > 32));
+        if (negative || overflow) return null;
+        var target = exponent <= 3 ? new BigInteger(mantissa >> (8 * (3 - exponent))) : new BigInteger(mantissa) << (8 * (exponent - 3));
+        return target.IsZero ? null : target;
+    }
+
+    /// Bitcoin Core's CheckProofOfWork: the target of nBits is valid and no easier than `limit`, and the header's double
+    /// SHA-256, read as a 256-bit little-endian number, is at most that target. Without it a single lying explorer could
+    /// hand out a made-up header whose merkle root is any message it likes.
+    public bool HasProofOfWork(BigInteger limit)
+    {
+        if (Target(Bits) is not { } target || target > limit) return false;
+        var hash = new BigInteger(SHA256.HashData(SHA256.HashData(Raw)), isUnsigned: true, isBigEndian: false);
+        return hash <= target;
     }
 }
 
@@ -40,12 +68,21 @@ public enum BitcoinOutcome { Verified, Mismatch, NotChecked, NoAttestation }
 public sealed record BitcoinCheck(BitcoinOutcome Outcome, ulong? Height, DateTime? Time, IReadOnlyList<string> Sources, string? Problem);
 
 /// Block headers from public explorers (Esplora API), checked against each other — no Bitcoin node needed. A source
-/// counts only when the header it gives hashes to the block hash it gave for the height. A source that fails (no
-/// answer within the timeout, an error, more than 64 kB, not hex) is left out, never an exception (only the
-/// caller's own cancellation throws).
+/// counts only when the header it gives hashes to the block hash it gave for the height and carries its proof of work
+/// (BlockHeader.HasProofOfWork at PowLimit). A source that fails (no answer within the timeout, an error, more than
+/// 64 kB, not hex, no proof of work) is left out, never an exception (only the caller's own cancellation throws).
 public static class BitcoinHeaders
 {
     public static IReadOnlyList<string> Sources { get; } = ["https://blockstream.info/api", "https://mempool.space/api"];
+
+    /// Bitcoin's proof-of-work limit (Core's mainnet powLimit, 2^224 − 1): no block's target was ever easier.
+    public static readonly BigInteger MainnetPowLimit = (BigInteger.One << 224) - 1;
+
+    /// The limit a source's header is checked at: MainnetPowLimit. Tests set regtest's limit once (TestEnvironment), so
+    /// the headers of their faked explorers can be made at an easy difficulty in a few tries.
+    internal static BigInteger? PowLimitOverride { get; set; }
+
+    public static BigInteger PowLimit => PowLimitOverride ?? MainnetPowLimit;
 
     /// GET `<src>/block-height/<h>` (64 hex digits) and `<src>/block/<hash>/header` (160 hex digits) at every source
     /// at once, each within `timeout`.
@@ -103,6 +140,7 @@ public static class BitcoinHeaders
         var raw = Hex(await Text(http, $"{b}/block/{Convert.ToHexStringLower(hash)}/header", ct).ConfigureAwait(false), BlockHeader.Size);
         var header = new BlockHeader(height, raw);
         if (header.HashHex != Convert.ToHexStringLower(hash)) throw new InvalidDataException("the header does not hash to the block hash the source gave");
+        if (!header.HasProofOfWork(PowLimit)) throw new InvalidDataException("the header has no valid proof of work");
         return header;
     }
 

@@ -1,6 +1,8 @@
+using System.Buffers.Binary;
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Net;
+using System.Numerics;
 using System.Security.Cryptography;
 using System.Text;
 using Offload.Core.Proof.Ots;
@@ -359,6 +361,99 @@ public class OtsNetworkTests
         return h;
     }
 
+    /// nBits of regtest (Bitcoin Core's chainparams): target 0x7fffff·256^29, about every second nonce passes.
+    public const uint RegtestBits = 0x207fffff;
+
+    /// Regtest's proof-of-work limit (2^255 − 1); TestEnvironment lets the header check accept targets up to it.
+    public static readonly BigInteger RegtestPowLimit = (BigInteger.One << 255) - 1;
+
+    /// A synthetic block header for tests: version 0x20000000, no previous block, `merkleRoot` at bytes 36–68, `time`,
+    /// nBits RegtestBits and the first nonce from 0 whose hash meets that target — it passes the proof-of-work check at
+    /// regtest's limit (TestEnvironment), never at Bitcoin's (BitcoinHeaders.MainnetPowLimit). Deterministic.
+    public static byte[] Mine(byte[] merkleRoot, DateTime time, uint version = 0x20000000)
+    {
+        var h = new byte[BlockHeader.Size];
+        BinaryPrimitives.WriteUInt32LittleEndian(h, version);
+        merkleRoot.CopyTo(h, 36);
+        BinaryPrimitives.WriteUInt32LittleEndian(h.AsSpan(68), (uint)new DateTimeOffset(time).ToUnixTimeSeconds());
+        BinaryPrimitives.WriteUInt32LittleEndian(h.AsSpan(72), RegtestBits);
+        for (uint nonce = 0; ; nonce++)
+        {
+            BinaryPrimitives.WriteUInt32LittleEndian(h.AsSpan(76), nonce);
+            if (new BlockHeader(0, h).HasProofOfWork(RegtestPowLimit)) return h;
+        }
+    }
+
+    // Hardening (Task 4 review, ruling in Task 7): a header counts only with its proof of work — the real block passes,
+    // the same header with another nonce does not, and a header made at an easy difficulty never passes Bitcoin's limit.
+    [Fact]
+    public void ProofOfWork_RealHeaderPasses_ChangedNonceFails()
+    {
+        var real = new BlockHeader(358391, Real());
+        Assert.Equal(0x181686f5u, real.Bits);   // bytes 72–76 of the header: f5 86 16 18
+        Assert.True(real.HasProofOfWork(BitcoinHeaders.MainnetPowLimit));
+        Assert.True(real.HasProofOfWork(RegtestPowLimit));
+        Assert.False(new BlockHeader(358391, Changed(76)).HasProofOfWork(BitcoinHeaders.MainnetPowLimit));
+        Assert.False(new BlockHeader(358391, Changed(79)).HasProofOfWork(RegtestPowLimit));
+
+        var easy = new BlockHeader(1, Mine(new byte[32], new DateTime(2026, 11, 19, 0, 0, 0, DateTimeKind.Utc)));
+        Assert.Equal(RegtestBits, easy.Bits);
+        Assert.True(easy.HasProofOfWork(RegtestPowLimit));
+        Assert.False(easy.HasProofOfWork(BitcoinHeaders.MainnetPowLimit));   // easier than Bitcoin ever allowed
+        Assert.Equal((BigInteger.One << 224) - 1, BitcoinHeaders.MainnetPowLimit);
+    }
+
+    // The compact target as Bitcoin Core's SetCompact: mantissa (low 23 bits) × 256^(exponent − 3).
+    [Theory]
+    [InlineData(0x1d00ffffu, "00000000ffff0000000000000000000000000000000000000000000000000000")]
+    [InlineData(0x181686f5u, "00000000000000001686f5000000000000000000000000000000000000000000")]
+    [InlineData(0x207fffffu, "7fffff0000000000000000000000000000000000000000000000000000000000")]
+    [InlineData(0x03123456u, "123456")]
+    [InlineData(0x02123456u, "1234")]
+    [InlineData(0x01123456u, "12")]
+    public void Target_Compact(uint bits, string bigEndianHex) =>
+        Assert.Equal(new BigInteger(Convert.FromHexString(bigEndianHex), isUnsigned: true, isBigEndian: true), BlockHeader.Target(bits));
+
+    // Negative (the sign bit 0x00800000), zero and overflowing (more than 256 bits) targets are refused, as in Core.
+    [Theory]
+    [InlineData(0x04923456u)]
+    [InlineData(0x1d800001u)]
+    [InlineData(0x1d000000u)]
+    [InlineData(0x00000000u)]
+    [InlineData(0x01003456u)]
+    [InlineData(0x23000001u)]
+    [InlineData(0x22000100u)]
+    [InlineData(0x21010000u)]
+    public void Target_InvalidCompact_Null(uint bits) => Assert.Null(BlockHeader.Target(bits));
+
+    [Fact]
+    public void Target_LargestValid()
+    {
+        Assert.Equal(new BigInteger(0xff) << 248, BlockHeader.Target(0x220000ffu));
+        Assert.Equal(new BigInteger(0xffff) << 240, BlockHeader.Target(0x2100ffffu));
+        Assert.Equal(new BigInteger(0x7fffff) << 232, BlockHeader.Target(0x207fffffu));
+    }
+
+    // A source whose header (with its own, consistent hash) has no proof of work is a failed source — two of them
+    // leave the block not checked, never verified and never a mismatch.
+    [Fact]
+    public async Task Verify_HeaderWithoutProofOfWork_SourceFails()
+    {
+        using var http = Client();
+        var forged = Real();
+        forged[76] ^= 0x01;   // another nonce: the merkle root stays the attested one, the work is gone
+        using Fake e1 = Explorer(358391, forged), e2 = Explorer(358391, forged);
+
+        var look = await BitcoinHeaders.Get(http, 358391, [e1.Url, e2.Url], Patient, default);
+        Assert.Null(look.Header);
+        Assert.Equal([e1.Url, e2.Url], look.Failed);
+        Assert.False(look.Conflict);
+
+        var check = await BitcoinHeaders.Verify(http, OtsFormatTests.HelloWorld(), [e1.Url, e2.Url], Patient, default);
+        Assert.Equal(BitcoinOutcome.NotChecked, check.Outcome);
+        Assert.Null(check.Time);
+    }
+
     [Fact]
     public void BlockHeader_Fields()
     {
@@ -413,11 +508,14 @@ public class OtsNetworkTests
         Assert.False(look.Conflict);
     }
 
+    // Two sources, two headers that both carry their proof of work (the real one, and one made at regtest difficulty with
+    // the same merkle root): a conflict, whichever is right.
     [Fact]
     public async Task Verify_SourcesDisagree_Conflict_NotChecked()
     {
         using var http = Client();
-        using Fake e1 = Explorer(358391, Real()), e2 = Explorer(358391, Changed(79));   // another nonce: another block
+        var other = Mine(Convert.FromHexString(OtsFormatTests.MerkleRoot358391), new DateTime(2015, 5, 28, 15, 41, 18, DateTimeKind.Utc));
+        using Fake e1 = Explorer(358391, Real()), e2 = Explorer(358391, other);
 
         var look = await BitcoinHeaders.Get(http, 358391, [e1.Url, e2.Url], Patient, default);
         Assert.True(look.Conflict);
@@ -430,11 +528,13 @@ public class OtsNetworkTests
         Assert.Contains("disagree", check.Problem);
     }
 
+    // Both sources agree on a header (with its proof of work, regtest difficulty) whose merkle root is another one.
     [Fact]
     public async Task Verify_MerkleRootDiffers_Mismatch()
     {
         using var http = Client();
-        using Fake e1 = Explorer(358391, Changed(40)), e2 = Explorer(358391, Changed(40));
+        var another = Mine(SHA256.HashData("another block"u8), new DateTime(2015, 5, 28, 15, 41, 18, DateTimeKind.Utc));
+        using Fake e1 = Explorer(358391, another), e2 = Explorer(358391, another);
 
         var check = await BitcoinHeaders.Verify(http, OtsFormatTests.HelloWorld(), [e1.Url, e2.Url], Patient, default);
 

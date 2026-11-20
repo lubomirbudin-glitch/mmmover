@@ -40,6 +40,9 @@ static class TestEnvironment
         // network; a test that wants calendars brings its own (LocalHttp).
         ProofStore.DefaultFolderOverride = Path.Combine(HistoryRoot, "history-" + Environment.ProcessId, "proof");
         ProofServiceOptions.DefaultOverride = () => new ProofServiceOptions { Calendars = [], HeaderSources = [], AllowedCalendar = _ => false };
+        // Synthetic block headers (OtsNetworkTests.Mine, regtest difficulty) pass the proof-of-work check of the faked
+        // explorers; a real header passes either way, and HasProofOfWork(MainnetPowLimit) tests Bitcoin's own limit.
+        Offload.Core.Proof.Ots.BitcoinHeaders.PowLimitOverride = OtsNetworkTests.RegtestPowLimit;
     }
 #pragma warning restore CA2255
 }
@@ -64,5 +67,6 @@ public class TestEnvironmentTests
         Assert.Empty(o.HeaderSources);
         Assert.False(o.AllowedCalendar("https://alice.btc.calendar.opentimestamps.org"));
         Assert.Null(o.Handler);
+        Assert.Equal(OtsNetworkTests.RegtestPowLimit, Offload.Core.Proof.Ots.BitcoinHeaders.PowLimit);
     }
 }

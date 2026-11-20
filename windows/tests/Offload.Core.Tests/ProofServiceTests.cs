@@ -1,4 +1,3 @@
-using System.Buffers.Binary;
 using System.Collections.Concurrent;
 using System.Net;
 using System.Security.Cryptography;
@@ -76,7 +75,8 @@ public class ProofServiceTests
     }
 
     /// An explorer with the Esplora API whose header of block 358391 has `root()` as its merkle root (asked lazily, when
-    /// the calendars have attested) and BlockTime as its time.
+    /// the calendars have attested) and BlockTime as its time — made at regtest difficulty (OtsNetworkTests.Mine), so it
+    /// carries the proof of work the header check asks for.
     sealed class Explorer : IDisposable
     {
         readonly LocalHttp http;
@@ -85,10 +85,7 @@ public class ProofServiceTests
         {
             http = new LocalHttp(c =>
             {
-                var header = new byte[80];
-                BinaryPrimitives.WriteUInt32LittleEndian(header, 0x20000000);
-                root().CopyTo(header, 36);
-                BinaryPrimitives.WriteUInt32LittleEndian(header.AsSpan(68), (uint)new DateTimeOffset(BlockTime).ToUnixTimeSeconds());
+                var header = OtsNetworkTests.Mine(root(), BlockTime);
                 var hash = Convert.ToHexStringLower([.. SHA256.HashData(SHA256.HashData(header)).Reverse()]);
                 var path = c.Request.Url!.AbsolutePath;
                 if (path == $"/block-height/{Height}") return Reply(c, 200, Encoding.ASCII.GetBytes(hash));
