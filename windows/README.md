@@ -24,6 +24,7 @@ v [`../docs/ROZDILY.md`](../docs/ROZDILY.md).
 | Nastavení, oznámení, distribuce (plán 8, 0.4.0): projekty, vlastní pravidla LUTů, BRAW Film Gen 4 → Gen 5, oznámení Windows a ntfy, kontrola aktualizací, podpis | hotovo (čeká ruční test: projekty a oznámení v GUI, podpis s certifikátem; převod Gen 4 je neověřený, čeká vzorek .braw Gen 4) |
 | Nový vzhled (plán 9, 0.5.0, návrh `docs/ui-navrh/`): tmavé i světlé téma podle Windows, horní lišta, kroky 1–3, karty úloh s průběhem po cílech, Pause, Copy again (oprava), TODAY a Card history, stránka Nastavení, štítek kamery a připojení, odhad času | hotovo (čeká ruční test 40–49 s kartou; snímky ukázkového režimu porovnané s `docs/ui-navrh/screeny`) |
 | Verify-in-Proxy (plán 10, 0.6.0): ověření primárního disku čtením pro proxy, ostatní na pozadí, "Safe to eject" × "Safe to format", blokový manifest a navázání po pádu, XXH128, obsahová kontrola | hotovo (čeká ruční test 50–58) |
+| Offload Proof (plán 11, 0.12.0): SHA-256 při čtení karty, manifest `_REPORT\offload_proof.json`, ukotvení přes OpenTimestamps v Bitcoinu (`.ots`), fronta na pozadí, ověřovač `mmmover proof` a nezávislý `shared/proof/verify_proof.py` | hotovo (čeká ruční test chipu a přepínače v GUI) |
 
 ## Build a testy
 
@@ -451,6 +452,12 @@ mmmover E:\ -d D:\Backup --proxy --lut-rule camera=FX6:sony-slog3-sgamut3cine --
 mmmover E:\ -d D:\Backup --proxy --braw-gen5                 # BRAW Film Gen 4 jako Gen 5 (neověřeno, čeká vzorek Gen 4)
 mmmover E:\ -d D:\Backup --proxy --hw-decode                 # H.264/HEVC dekóduje grafická karta (experimentální)
 mmmover E:\ -d D:\Backup --ntfy https://ntfy.sh/my-secret-channel   # výsledek na telefon (jen název karty, výsledek, počty)
+mmmover E:\ -d D:\Backup --no-proof                         # bez Offload Proof (SHA-256 se nepočítá, nic se neodesílá)
+mmmover proof verify D:\Backup\2026-11-19\A001\CLIP\A001C003.MXF   # soubor existoval nezměněný nejpozději v čase bloku (0 OK, 1 FAILED, 2 NOT YET)
+mmmover proof verify D:\Backup\2026-11-19\A001 --offline     # celá složka karty; --offline se neptá průzkumníků bloků
+mmmover proof status                                        # důkazy ve frontě tohoto počítače
+mmmover proof upgrade                                       # fronta hned: razítko, upgrade, zápis .ots na disky
+mmmover proof upgrade D:\Backup\2026-11-19\A001              # .ots ve složce karty na místě; manifest bez .ots orazítkuje
 ```
 
 Plán 8: `--project <název>` vezme projekt uložený v aplikaci (`settings.json`; cíle, ověření, součet, výstupy, oznámení,
@@ -461,6 +468,16 @@ jeho pravidla); projekt, který navrhuje název z klipů, se chová jako `--name
 nesmí obsahovat `:`; platí jen s `--lut auto` — s jiným `--lut` je to chyba; chybějící `.cube` je chyba, i s `--dry-run`).
 `--ntfy <url>` pošle výsledek (i odmítnutí před kopií) na ntfy, po konci čeká nejvýš 11 s (10 s odeslání + 1 s rezerva; pak "ntfy: not waiting any longer");
 oznámení Windows CLI neposílá.
+
+Offload Proof (plán 11, `docs/FORMATY.md` oddíl „Offload Proof“): `copy` a `append` po ověřené kopii zapíšou
+`_REPORT\offload_proof.json` a jednou (nejvýš 20 s, po řádcích výsledku a ntfy) ho orazítkují u kalendářů OpenTimestamps —
+ven jde jen 32bajtový hash s nonce; poslední řádek `Proof: …` řekne, kde důkaz je. Zapnuto podle `--project`; bez něj
+(nebo když projekt přepínač neuložil) jen na CPU s instrukcemi SHA — na CPU bez nich úloha se zapnutým důkazem jednou
+vypíše „Proof: This computer has no SHA instructions: …“; `--no-proof` vypne. `proof verify <soubor | složka karty>
+[--offline]` ověří soubor proti manifestu, kanonický zápis, Merkle kořen, `.ots` a Bitcoin blok u dvou průzkumníků (kód 0
+OK, 1 FAILED, 2 NOT YET); `proof status` vypíše frontu (`%APPDATA%\mmMover\proof`); `proof upgrade` ji zpracuje hned,
+`proof upgrade <složka karty>` upgraduje `.ots` v `_REPORT` na místě (jen striktní nadmnožinou, jen vedle manifestu se
+stejným SHA-256) a orazítkuje manifest důkazu, který `.ots` ještě nemá. Návratový kód `copy` důkaz nikdy nemění.
 
 Výstupy (plán 7): po každé kopii nebo doplnění vznikne `_REPORT\<karta>_clips.csv` (`--no-clip-list` vypne, `--ale`
 přidá `<karta>_clips.ale` pro Avid) a na každém cíli znovu denní report `<datum>\_REPORT\<datum>_day_report.html/.pdf`

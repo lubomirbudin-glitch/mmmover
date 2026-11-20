@@ -324,7 +324,9 @@ zadání: [OFFLOAD-PROOF.md](OFFLOAD-PROOF.md). Nezávislý ověřovač bez .NET
   `<sha256>` by neprošlo schématem a žádný nástroj by ho nečetl. SHA-256 je jen v `files[].sha256` reportu, v blokovém
   manifestu a v manifestu důkazu. ASC MHL a seznamy `.xxh64`/`.md5` se důkazem nemění.
 - **Vypnutý důkaz = SHA-256 se nepočítá vůbec** (ani při doplnění, navázání a opravě); zapnutý ho počítá vlastní vlákno
-  v jediném čtení karty, zpětné čtení cílů ho nepočítá (porovnává xxh64 a MD5 jako dosud). Oprava („Zkopírovat znovu“)
+  v jediném čtení karty, zpětné čtení cílů ho nepočítá (porovnává xxh64 a MD5 jako dosud). **Bez instrukcí SHA v CPU**
+  (x86 CPUID 7 EBX bit 29, Arm64 SHA-256) je výchozí vypnutý: softwarový SHA-256 (~0,4–0,6 GB/s) by zdržel rychlou kartu
+  (CFexpress, NVMe 1–1,7 GB/s) — viz `proof` v `settings.json`. Oprava („Zkopírovat znovu“)
   nový důkaz nezakládá (data jsou tatáž).
 - **Kdy se důkaz zakládá:** jakmile je záznam generace hotový — ASC MHL zapsaná a ověření skončilo (s ověřením během proxy
   až po commitu fáze 2). Nikdy u zrušené kopie, při výměně karty během pauzy, u opravy ani když fáze 2 nic neověřila.
@@ -338,7 +340,12 @@ zadání: [OFFLOAD-PROOF.md](OFFLOAD-PROOF.md). Nezávislý ověřovač bez .NET
 ### Manifest `offload_proof.json` (verze 1)
 
 UTF-8 bez BOM, bez koncového řádku, **přesně** kanonická serializace RFC 8785 (klíče seřazené podle UTF-16 jednotek, bez
-mezer; jen řetězce, celá čísla, `true/false`, pole a objekty). Ověřovač odmítne manifest, který není kanonický.
+mezer; jen řetězce, celá čísla, `true/false`, pole a objekty). Ověřovač odmítne manifest, který není kanonický — kanonický
+zápis kontroluje na **načteném JSON** (RFC 8785 toho, co v souboru je), ne na tom, co z něj udělá jeho verze: klíč, který
+přidá pozdější zapisovatel (a který je v kanonickém zápisu i v ukotveném digestu), není úprava, ověřovač ho přeskočí.
+Teprve potom kontroluje pole s vlastními hláškami; manifest, který kontroly nepřežije (hash s čímkoli za hex číslicemi,
+`size` mimo 0…2^53 − 1, `version` ≠ 1, `count` < 0, `generation` < 1, `excluded`/`files`/`mhl` jiné než pole objektů), je
+`FAILED — <jméno> is not a valid proof manifest (<důvod>)`, nikdy výjimka (oba ověřovače).
 
 | Klíč | Typ | Obsah |
 |---|---|---|
@@ -373,12 +380,19 @@ jen z kalendářů `https://*.calendar.opentimestamps.org`, `*.calendar.eternity
 Serializace jako referenční `python-opentimestamps` (atestace a operace seřazené, `0xff` před každou položkou kromě
 poslední, atestace `0x00` + 8bajtový tag + varbytes payload; tagy Pending `83dfe30d2ef90c8e`, Bitcoin `0588960d73d71901`;
 LEB128 varuint). Operace SHA-256, SHA-1, RIPEMD-160 (staré oficiální soubory ji používají), append, prepend; Keccak,
-reverse a hexlify čtečka odmítne. Limity: hloubka 255 operací, zpráva a argument 4096 B, payload 8192 B, uri 1000 znaků.
+reverse a hexlify čtečka odmítne. Limity (mmMover i `verify_proof.py`): soubor nejvýš 4 MB, hloubka 255 operací, zpráva
+a argument 4096 B, payload 8192 B, uri 1000 znaků. Nepřátelský `.ots` stojí nejvýš 16 různých kalendářů na jeden upgrade
+a 16 různých výšek bloků (nejnižších) na jednu kontrolu — co se vynechá, jde do logu (ověřovač `Warning:`).
 
 **Soubor v záloze, který se smí nahradit** (vedle `<karta>.xxh64`/`.md5`, `ascmhl_chain.xml` a odvozených souborů): `.ots`
 se nahradí jen **striktně úplnějším** souborem — nový míří na stejný digest a obsahuje každou atestaci starého (upgrade jen
 přidává) — a jen ve složce karty, kde už leží manifest s tímto SHA-256 (platí i pro `mmmover proof upgrade <složka karty>`;
-cizí `.ots`, `.ots` upraveného manifestu a `.ots` bez manifestu zůstanou). Jinak se nechá a zapíše se do logu.
+cizí `.ots`, `.ots` upraveného manifestu a `.ots` bez manifestu zůstanou). `.ots` téhož digestu, který strom fronty
+neobsahuje a ani ho neobsahuje (fronta ztratila `.ots` a razítkovala znovu — jiný nonce, jiná větev), se nahradí
+**sjednocením** obou (pořád nadmnožina starého; nad 4 MB se nechá) a fronta si větev z disku vezme taky. Bitcoin
+atestace, kterou průzkumníci vyvrátili, se na disk nikdy nezapíše (zapíše se jen zbytek stromu). Jinak se nechá a zapíše
+se do logu. `mmmover proof upgrade <složka karty>` navíc orazítkuje manifest důkazu (jen jméno `offload_proof*.json`),
+který `.ots` ještě nemá — třeba když fronta záznam nevzala: ven jde jen commitment s nonce, `.ots` je nový soubor.
 
 ### Hlavičky bloků a ověření
 
@@ -399,7 +413,10 @@ zdroje hlaviček nedostupné či v rozporu).
 
 `<id>.json` (+ `<id>.ots`, poslední známý strom): `id`, `created`, `manifest` (jméno souboru), `digest` (hex), `cardName`,
 `date`, `generation`, `cardPaths[]`, `volumeSerials[]`, `state`, `stampedAt`?, `nextCheck`?, `tries`, `lastError`?,
-`bitcoin`? {`height`, `time`}, `written[]` (per cíl `"none"` | `"pending"` | `"complete"`); neznámé klíče se zachovají.
+`bitcoin`? {`height`, `time`}, `written[]` (per cíl `"none"` | `"pending"` | `"complete"`), `contradicted`? (Windows od
+0.12.0 — výšky bloků, jejichž hlavička vyvrátila Bitcoin atestaci kalendáře, seřazené; chybí, když žádná); neznámé klíče se
+zachovají. `lastError` říká i proč selhal každý kalendář (`<url>: timeout`, `HTTP 503`, `answer too big (over 64 kB)`,
+`not a timestamp (…)`, `TLS/connection: …`). Čtení fronty mutex nebere (soubory se nahrazují atomicky), zápisy ano.
 Zápisy pod pojmenovaným mutexem `Local\mmMover-proof-store` (síť nikdy pod ním), zápis `.ots` na disky pod
 `Local\mmMover-proof-disks`.
 
@@ -410,8 +427,13 @@ Zápisy pod pojmenovaným mutexem `Local\mmMover-proof-store` (síť nikdy pod n
 | `complete` | zelený „Proof: anchored“ (tooltip: blok N); ještě ne na všech discích oranžový „Proof: anchored · on N of M disks“ | zápis na chybějící disky při každém běhu služby (10 min) a po připojení disku |
 | `failed` | červený „Proof: not created“ + důvod v tooltipu | nic (manifest se nezapsal) |
 
-`complete` jen když kontrola hlavičky dá Verified, nebo NotChecked (průzkumníci nedostupní); Mismatch (kalendář vydal
-Bitcoin atestaci, která nesedí s blokem) nechá záznam `pending`. Částečné zapečetění (manifest se zapsal jen na některé
+`complete` jen když kontrola hlavičky dá Verified, nebo NotChecked (průzkumníci nedostupní) u atestace, kterou nevyvrátili;
+Mismatch (kalendář vydal Bitcoin atestaci, která nesedí s blokem) nechá záznam `pending` a výšku si zapíše do
+`contradicted` — taková atestace záznam nedokončí ani později, když průzkumníci neodpovídají (`bitcoin.height` = nejnižší
+nevyvrácená). Dokončený záznam bez času bloku (NotChecked) se podle plánu upgradu ověří znovu (jen průzkumníci, kalendáře
+ne): Verified doplní čas, vyvrácená atestace bez jiné nevyvrácené vrátí záznam do `pending`. Když fronta po zapsání
+manifestů záznam nevezme (zaneprázdněná, nezapisovatelná), úloha to zkusí znovu na pozadí za 1, 3 a 10 s, pak `ProofError`
+(manifest zůstane, `proof upgrade <složka karty>` ho orazítkuje). Částečné zapečetění (manifest se zapsal jen na některé
 disky) nechá v záznamu všechny cíle reportu; `.ots` se zapíše jen tam, kde manifest je, a chip říká „on N of M disks“.
 
 ## Report ověření (Windows od 0.2.0, Mac od 0.3.0)
@@ -544,9 +566,13 @@ nebo formát `arriraw`) je to TC denní doby. Stopáž = součet `info.duration`
   při kopii, nebo první cíl. Jiná hodnota (z novější verze) se zachová a čte jako `"fastest"`. CLI `--primary N` (1…počet cílů) má přednost.
 - `hash` (`"xxh64"` | `"both"`, výchozí `"xxh64"`, Windows od 0.3.0): kontrolní součty kopie; `both` = xxh64 + MD5. Jiná
   hodnota (z novější verze) se zachová a čte jako `xxh64`.
-- `proof` (Windows od 0.12.0, součást projektu): `enabled` (bool, výchozí `true`) — Offload Proof: počítat SHA-256 a po
-  každé kopii založit důkaz (viz „Offload Proof“); vypnuto = SHA-256 se nepočítá vůbec. Nastavení → Verification, CLI
-  `--no-proof`. Neznámé klíče sekce se zachovají, nečitelná sekce se zapíše zpět beze změny; do nového projektu se kopíruje.
+- `proof` (Windows od 0.12.0, součást projektu): `enabled` (bool) — Offload Proof: počítat SHA-256 a po každé kopii
+  založit důkaz (viz „Offload Proof“); vypnuto = SHA-256 se nepočítá vůbec. Výchozí (klíč chybí: první start, nastavení
+  starší verze, projekt bez sekce) = `true` jen na CPU s instrukcemi SHA, jinak `false`; uložená hodnota vždy vyhraje. Bez
+  instrukcí SHA ukáže Nastavení pod přepínačem „This computer has no SHA instructions: Offload Proof hashes about N MB/s
+  and can slow cards that read faster than that.“ (N změřené jednou, na 50 MB/s) a CLI tentýž řádek jednou za úlohu se
+  zapnutým důkazem. Nastavení → Verification, CLI `--no-proof` (bez `--project` platí stejné výchozí pravidlo). Neznámé
+  klíče sekce se zachovají, nečitelná sekce se zapíše zpět beze změny; do nového projektu se kopíruje.
 - `outputs` (Windows od 0.3.0): `dayReport` (bool, `true`) — denní report po každé úloze; `clipListCsv` (bool, `true`),
   `clipListAle` (bool, `false`) — seznamy klipů; `localReport` (bool, `true`, úkol 2026-10-09) — kopie reportu karty na
   tomto počítači; `localReportFolder` (string | `null` = `<Dokumenty>\mmMover reports`; dříve `ArcLoader reports`, `Offload reports` a (do 0.8.0) `Offload reporty`, ty se při čtení prohledávají také). Neznámé klíče sekce se zachovají.
