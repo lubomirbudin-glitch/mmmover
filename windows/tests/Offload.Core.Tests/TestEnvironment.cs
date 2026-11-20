@@ -95,7 +95,7 @@ public class TestEnvironmentTests
         Assert.Equal(@"Local\mmMover-proof-disks" + suffix, ProofService.DiskLockName);
 
         using var dir = new TempDir();
-        var store = new ProofStore(dir.Path) { LockTimeout = TimeSpan.FromMilliseconds(500) };
+        var store = new ProofStore(dir.Path);   // the usual 10 s: without its own name it would wait for the holder and fail
         using var held = new ManualResetEventSlim();
         using var release = new ManualResetEventSlim();
         var app = new Thread(() =>

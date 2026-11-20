@@ -165,7 +165,9 @@ public class ProofStoreTests
     public void Reads_NeverWaitForTheMutex_WritesDo()
     {
         using var dir = new TempDir();
-        var store = new ProofStore(dir.Path) { LockTimeout = TimeSpan.FromSeconds(3) };
+        // a mutex of this test's own (holding the test process's store mutex would hold up every other test's store)
+        var name = ProofStore.LockName + "-" + Guid.NewGuid().ToString("N");
+        var store = new ProofStore(dir.Path) { LockTimeout = TimeSpan.FromSeconds(3), MutexName = name };
         var e = Sample();
         store.Add(e);
         store.WriteOts(e.Id, [1, 2, 3]);
@@ -173,7 +175,7 @@ public class ProofStoreTests
         using var release = new ManualResetEventSlim();
         var holder = new Thread(() =>
         {
-            using var m = new Mutex(false, ProofStore.LockName);
+            using var m = new Mutex(false, name);
             m.WaitOne();
             held.Set();
             release.Wait();

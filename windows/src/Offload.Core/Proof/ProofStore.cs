@@ -33,6 +33,9 @@ public sealed partial class ProofStore(string folder)
     /// atomically, so it never sees half a file).
     internal TimeSpan LockTimeout { get; init; } = TimeSpan.FromSeconds(10);
 
+    /// Test seam: this store's own mutex name (a test that holds it then blocks no other test's store).
+    internal string? MutexName { get; init; }
+
     /// Test seam: called with the path before every file this store writes (a throw = that write failed).
     internal Action<string>? BeforeWrite { get; set; }
 
@@ -181,7 +184,7 @@ public sealed partial class ProofStore(string folder)
     }
 
     IDisposable HoldForWrite() =>
-        NamedLock.Acquire(LockName, LockTimeout) ?? throw new IOException($"the proof store is busy (another mmMover held it for {LockTimeout.TotalSeconds:0} s)");
+        NamedLock.Acquire(MutexName ?? LockName, LockTimeout) ?? throw new IOException($"the proof store is busy (another mmMover held it for {LockTimeout.TotalSeconds:0} s)");
 }
 
 /// A named mutex held on the calling thread (re-entrant there). Acquire never holds it across an await.
