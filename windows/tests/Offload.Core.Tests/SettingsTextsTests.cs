@@ -43,4 +43,24 @@ public class SettingsTextsTests
         Assert.Equal("Windows: off · phone (ntfy): film-x",
             SettingsTexts.NotifySummary(new NotifySettings { Windows = false, Ntfy = new NtfySettings { Enabled = true, Topic = "film-x" } }));
     }
+
+    // Plan 11 (Offload Proof): the switch under the verification options and its help line.
+    [Fact]
+    public void Proof_SwitchAndHelpLine()
+    {
+        Assert.Equal("Offload Proof — anchor every offload in time", SettingsTexts.ProofLabel);
+        Assert.Equal("Only a fingerprint (hash) leaves this computer, never files or names. Free (OpenTimestamps, Bitcoin).", SettingsTexts.ProofNote);
+    }
+
+    // Final fix A1: the note under the switch on a CPU without SHA instructions — the measured rate to 50 MB/s.
+    [Fact]
+    public void Proof_SlowCpuNote_RateTo50()
+    {
+        Assert.Equal("This computer has no SHA instructions: Offload Proof hashes about 450 MB/s and can slow cards that read faster than that.",
+            SettingsTexts.ProofSlowCpuNote(437.2));
+        Assert.Contains("about 500 MB/s", SettingsTexts.ProofSlowCpuNote(524.9));
+        Assert.Contains("about 550 MB/s", SettingsTexts.ProofSlowCpuNote(525));
+        Assert.Contains("about 50 MB/s", SettingsTexts.ProofSlowCpuNote(12));   // never "about 0"
+        Assert.Contains("about 1,650 MB/s", SettingsTexts.ProofSlowCpuNote(1640));
+    }
 }

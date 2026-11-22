@@ -4,6 +4,8 @@ using Offload.Core.Desktop;
 using Offload.Core.Hardware;
 using Offload.Core.History;
 using Offload.Core.Notify;
+using Offload.Core.Proof;
+using Offload.Core.Proof.Ots;
 
 namespace Offload.Cli;
 
@@ -24,13 +26,14 @@ static class CopyCommand
         var dryRun = new Option<bool>("--dry-run") { Description = "Only scan and check, do not copy." };
         var noHistory = new Option<bool>("--no-history") { Description = "Do not read or write the offload history (%APPDATA%\\mmMover\\history.json)." };
         var hash = new Option<string>("--hash") { Description = "Checksums: xxh64 (default) or both (xxh64 + MD5; MD5 is slower on fast cards).", DefaultValueFactory = _ => "xxh64" };
+        var noProof = NoProofOption();
         var project = CliProject.Create();
         var ntfy = CliNtfy.Create();
         var stageTwo = new StageTwoOptions();
 
         var cmd = new Command("copy", "Copy a card to <dest>/<date>/<card name>/ on every destination and verify.");
         cmd.Arguments.Add(source);
-        foreach (var o in new Option[] { dest, name, date, chunkMb, buffers, noVerify, allowSame, dryRun, noHistory, hash, project, ntfy }) cmd.Options.Add(o);
+        foreach (var o in new Option[] { dest, name, date, chunkMb, buffers, noVerify, allowSame, dryRun, noHistory, hash, noProof, project, ntfy }) cmd.Options.Add(o);
         stageTwo.AddTo(cmd);
         cmd.SetAction(r =>
         {
@@ -56,6 +59,7 @@ static class CopyCommand
                         : HashKinds.TryParseWire(r.GetValue(hash), out var kinds) ? kinds : throw new ArgumentException(Msg.UnknownHash(r.GetValue(hash))),
                     Project = picked?.Project,
                     Notify = CliNtfy.Settings(r, ntfy, profile),
+                    Proof = ProofOn(r, noProof, profile),
                 };
                 stageTwo.Apply(r, config, profile);
             }
@@ -97,6 +101,8 @@ static class CopyCommand
         // Only when proxies or clip analysis (thumbnails) are on — otherwise no LUT is used at all.
         if (LutOption.PlanLine(config.Proxy, config.AnalyzeClips) is string lutLine) Console.WriteLine(lutLine);
         var job = JobFactory(config);
+        // Final fix A1: with the proof on a CPU without SHA instructions, how fast it hashes — measured while the job plans.
+        var slowSha = config.Proof && !dryRun && !ProofHardware.HasShaInstructions ? Task.Run(ProofHardware.MeasureSha256MBps) : null;
         OffloadPlan? plan = null;
         try
         {
@@ -150,6 +156,7 @@ static class CopyCommand
             }
         }
         if (dryRun) return 0;
+        if (slowSha != null) Console.WriteLine("Proof: " + SettingsTexts.ProofSlowCpuNote(slowSha.GetAwaiter().GetResult()));
 
         Console.CancelKeyPress += (_, e) =>
         {
@@ -185,6 +192,9 @@ static class CopyCommand
         if (status.Warning != null) Console.WriteLine("Warning: " + status.Warning);
         if (status.Error != null) Console.WriteLine(Msg.CliError + status.Error);
         Ntfy(config, plan, status, report);
+        // Final fix C5: a queue entry still being retried in the background — waited for here, after the outcome.
+        if (job.ProofQueueing is { } queueing) queueing.Wait(TimeSpan.FromSeconds(30));
+        AnchorProof(config, job.Status());   // plan 11: last — its stamp (up to ProofWait) never delays the outcome or the push
         return ExitCode(config, status, report);
     }
 
@@ -210,6 +220,76 @@ static class CopyCommand
         // The wait itself is bounded (the proxy lookup may ignore the client's token).
         var send = Task.Run(() => NtfyClient.SendOutcomeAsync(config.Notify.Ntfy, JobOutcomes.Final(card, status, report), m => Console.Error.WriteLine(m)));
         if (!send.Wait(NtfyClient.DefaultTimeout + TimeSpan.FromSeconds(1))) Console.Error.WriteLine("ntfy: not waiting any longer");
+    }
+
+    /// Plan 11 (design 9): `--no-proof` of `copy` and `append`.
+    internal static Option<bool> NoProofOption() =>
+        new("--no-proof") { Description = "No Offload Proof: no SHA-256 of the files, no proof manifest, nothing sent to the timestamp calendars." };
+
+    /// The proof is on unless --no-proof is given or the project (--project) switched it off; without --project — and
+    /// for a project that never stored the switch — it is on where the CPU has SHA instructions (final fix A1, as the app).
+    internal static bool ProofOn(ParseResult r, Option<bool> noProof, SettingsProfile? profile) =>
+        !r.GetValue(noProof) && (profile?.Proof.Enabled ?? ProofHardware.HasShaInstructions);
+
+    /// Plan 11 (design 10): how long the CLI stamps the proof of its job right after it.
+    internal static readonly TimeSpan ProofWait = TimeSpan.FromSeconds(20);
+
+    /// Plan 11 (design 10): the proof the job sealed is stamped once right away (at most ProofWait, Ctrl+C ends it sooner;
+    /// the wait itself is bounded too, a DNS lookup may ignore the token) and its state printed — the queue (the app,
+    /// `mmmover proof upgrade`) finishes it. Why none was created is printed instead. Never changes the exit code.
+    static void AnchorProof(JobConfig config, JobStatus status)
+    {
+        if (status.ProofError is string why)
+        {
+            Console.WriteLine(Msg.ProofNotCreated(why));
+            return;
+        }
+        if (status.ProofId is not string id) return;
+        var store = new ProofStore(config.ProofFolder ?? ProofStore.DefaultFolder);
+        try
+        {
+            var options = ProofServiceOptions.Default();
+            options.Log = m => Console.Error.WriteLine(m);
+            var service = new ProofService(store, options);
+            var cts = new CancellationTokenSource(ProofWait);
+            // Ctrl+C: the entry stays queued, the queue stamps it later.
+            ConsoleCancelEventHandler stop = (_, _) =>
+            {
+                try { cts.Cancel(); }
+                catch (ObjectDisposedException) { }
+            };
+            Console.CancelKeyPress += stop;
+            var run = Task.Run(() => service.RunDue(cts.Token, only: [id]));
+            bool done = run.Wait(ProofWait + TimeSpan.FromSeconds(1));
+            Console.CancelKeyPress -= stop;
+            if (done)
+            {
+                service.Dispose();
+                cts.Dispose();
+            }
+            else Console.Error.WriteLine("proof: not waiting any longer");   // left running until the process ends
+        }
+        catch (Exception e)
+        {
+            Console.Error.WriteLine($"proof: {e.Message}");
+        }
+        var entry = store.Get(id) ?? new ProofEntry { Id = id };   // unreadable now: it waits in the queue
+        Console.WriteLine(Msg.ProofLine(entry, entry.State == ProofState.Pending ? PendingCalendars(store, id) : 0));
+    }
+
+    /// How many calendars hold the stamp: the pending attestations of the stored timestamp (0 = not known).
+    static int PendingCalendars(ProofStore store, string id)
+    {
+        try
+        {
+            return store.ReadOts(id) is { } bytes
+                ? OtsFile.Parse(bytes).Timestamp.All().Select(a => a.Attestation).OfType<PendingAttestation>().Select(p => p.Uri).Distinct().Count()
+                : 0;
+        }
+        catch (Exception)
+        {
+            return 0;
+        }
     }
 
     /// "Card A001: 3 files, 1 GB" for a full copy; an append (with plural forms): "Append to card A001

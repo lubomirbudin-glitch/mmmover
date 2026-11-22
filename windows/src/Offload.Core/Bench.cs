@@ -85,7 +85,7 @@ public static class Bench
     }
 
     /// Raw hashing throughput from memory — must be far above any disk, otherwise it is the bottleneck. `algorithm`:
-    /// "xxh64" or "md5" (spec 3.5: MD5 runs on its own thread during a copy, so this is its ceiling per card).
+    /// "xxh64", "md5" (spec 3.5: MD5 runs on its own thread during a copy, so this is its ceiling per card) or "sha256" (plan 11: the ceiling of the proof manifest).
     public static Line Hash(int size, string algorithm = "xxh64")
     {
         using var buf = new AlignedBuffer(size);

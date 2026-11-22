@@ -1,6 +1,7 @@
 using System.Globalization;
 using Offload.Core.Append;
 using Offload.Core.Hardware;
+using Offload.Core.Proof;
 
 namespace Offload.Core.Desktop;
 
@@ -35,7 +36,8 @@ public sealed record JobCardFacts(int Files, int Clips, long Bytes, string? Came
 
 public enum ChipTone { Neutral, Ok, Warning, Error }
 
-/// One of the card row's two verdicts (R5, spec 9): "Safe to eject" or "Safe to format" and how it looks.
+/// One of the card row's two verdicts (R5, spec 9): "Safe to eject" or "Safe to format" and how it looks — also the
+/// proof chip beside them (plan 11, ProofChip).
 public sealed record CardChip(string Text, ChipTone Tone);
 
 /// One content warning of a finished card (spec 7, 9): the clip and the label with the place and the kind of the defect.
@@ -281,6 +283,60 @@ public static class JobCard
         var eject = s.SafeToEject ? new CardChip("Safe to eject", format.Tone == ChipTone.Ok ? ChipTone.Ok : ChipTone.Neutral)
             : running ? new CardChip("Do not eject yet", ChipTone.Neutral) : new CardChip("Do not eject", ChipTone.Error);
         return (eject, format);
+    }
+
+    /// Plan 11 (Offload Proof, spec „Fronta a stavy“): the third chip of the card row — where the proof of this offload is
+    /// in the queue. `enabled`: the job's proof switch (JobConfig.Proof); `proofError`: why the job sealed none
+    /// (JobStatus.ProofError); `entry`: its queue entry as the proof service last saved it (null = nothing sealed, or not
+    /// read yet). Off or nothing sealed → no chip. Never says anything about the copy: the verdicts stay as they are.
+    public static CardChip? ProofChip(bool enabled, string? proofError, ProofEntry? entry)
+    {
+        if (!enabled) return null;
+        if (proofError != null) return new CardChip(ProofNotCreated, ChipTone.Error);
+        return entry?.State switch
+        {
+            null => null,
+            ProofState.Queued => new CardChip("Proof: waiting for network", ChipTone.Neutral),
+            ProofState.Pending => new CardChip("Proof: anchoring", ChipTone.Neutral),
+            // Ruling R9: a partial seal keeps every disk — the one the manifest never reached counts as missing.
+            ProofState.Complete when ProofDisks(entry) is var (on, of) && on < of =>
+                new CardChip($"Proof: anchored · on {on.ToString(Inv)} of {Texts.N(of, "disk")}", ChipTone.Warning),
+            ProofState.Complete => new CardChip("Proof: anchored", ChipTone.Ok),
+            _ => new CardChip(ProofNotCreated, ChipTone.Error),   // failed: the queue could not finish it
+        };
+    }
+
+    /// The proof chip's tooltip (ProofChip's arguments): what "anchoring" waits for, the block and its time (`zone`: the
+    /// PC's own unless given), which disks still miss the proof, why none was created; null where the chip says it all.
+    public static string? ProofTooltip(bool enabled, string? proofError, ProofEntry? entry, TimeZoneInfo? zone = null)
+    {
+        if (!enabled) return null;
+        if (proofError != null) return proofError;
+        return entry?.State switch
+        {
+            ProofState.Pending => "Bitcoin confirms the anchor in a few hours. mmMover finishes it in the background — keep it running or open it later.",
+            ProofState.Complete when ProofDisks(entry) is var (on, of) && on < of => "Connect the other disks — mmMover writes the finished proof onto them.",
+            // Final fix C3: a block the explorers could not check yet is never shown as checked (the queue checks it again).
+            ProofState.Complete when entry.BitcoinTime == null && entry.BitcoinHeight is { } h =>
+                $"Bitcoin block {h.ToString(Inv)} (block time not checked yet) — mmMover checks it again later.",
+            ProofState.Complete => $"{AnchorText(entry, zone ?? TimeZoneInfo.Local)} — the files existed unchanged no later than this.",
+            ProofState.Failed => entry.LastError ?? "the proof could not be finished",
+            _ => null,
+        };
+    }
+
+    const string ProofNotCreated = "Proof: not created";
+
+    /// How many card folders of the entry hold the finished proof, of how many.
+    static (int On, int Of) ProofDisks(ProofEntry e) => (e.Written.Count(w => w == ProofEntry.WrittenComplete), e.CardPaths.Count);
+
+    /// "Bitcoin block 912345 · 2026-11-20 00:41" (local time); the block alone when the explorers gave no time.
+    static string AnchorText(ProofEntry e, TimeZoneInfo zone)
+    {
+        var text = e.BitcoinHeight is { } h ? $"Bitcoin block {h.ToString(Inv)}" : "A Bitcoin block";
+        if (e.BitcoinTime is not { } t) return text;
+        var utc = t.Kind == DateTimeKind.Local ? t.ToUniversalTime() : DateTime.SpecifyKind(t, DateTimeKind.Utc);
+        return $"{text} · {TimeZoneInfo.ConvertTimeFromUtc(utc, zone).ToString("yyyy-MM-dd HH:mm", Inv)}";
     }
 
     /// Spec 7: the button that unlocks the green verdict once the user has looked at the content warnings (Offload never

@@ -11,6 +11,10 @@ public sealed class OffloadOptions
     /// The checksums of a full copy (spec 3.5): xxh64, or xxh64 + MD5 (R16 — never MD5 alone). An append uses the
     /// earlier backup's instead (OffloadPlan.Hashes).
     public HashKind Hashes { get; set; } = HashKind.Xxh64;
+    /// Plan 11 (Offload Proof): a full copy, an append and a resume also compute SHA-256 of every file in the card read
+    /// (OffloadPlan.Hashes gets HashKind.Sha256) — a repair only when the backup it repairs had it, never the read-back.
+    /// Off: no SHA-256 at all, whatever an earlier backup had.
+    public bool Proof { get; set; }
     /// Files at least this large are flushed individually; the rest are flushed once at the end.
     public long FullSyncThreshold { get; set; } = 256L << 20;
     /// Plan 10, R6: every this many blocks of a file being written, its block hashes go into the manifest as a checkpoint
@@ -80,7 +84,8 @@ public sealed class OffloadPlan
     /// Append: files of the earlier backup that were never read back.
     public int UnverifiedEarlier { get; init; }
     /// What this copy hashes and verifies with (xxh64 always): OffloadOptions.Hashes for a full copy, the earlier
-    /// backup's for an append (spec 3.5).
+    /// backup's for an append (spec 3.5). Plan 11: `Sha256` (OffloadOptions.Proof) is hashed from the card only — the
+    /// read-back never computes it.
     public HashKind Hashes { get; init; } = HashKind.Xxh64;
     /// Spec 2.5: what each destination volume needs and has free (the CLI's --dry-run lists it).
     public IReadOnlyList<Space.SpaceLine> Space { get; init; } = [];

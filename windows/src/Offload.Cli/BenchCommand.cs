@@ -10,7 +10,7 @@ static class BenchCommand
         var read = new Option<string?>("--read") { Description = "Card or file to read from." };
         var write = new Option<string[]>("--write") { Description = "Destination folder to test write speed (repeatable).", DefaultValueFactory = _ => [] };
         var gb = new Option<double>("--gb") { Description = "Amount of data per test in GB.", DefaultValueFactory = _ => 2, CustomParser = a => CliParse.Parse(a) ?? 2 };
-        var hash = new Option<string>("--hash") { Description = "Checksums to measure: xxh64 (default) or md5 (xxh64 + MD5, as a copy with --hash both).", DefaultValueFactory = _ => "xxh64" };
+        var hash = new Option<string>("--hash") { Description = "Checksums to measure: xxh64 (default), md5 (xxh64 + MD5, as a copy with --hash both) or sha256 (xxh64 + SHA-256, the proof manifest).", DefaultValueFactory = _ => "xxh64" };
         var cmd = new Command("bench", "Measure card read speed and disk write/read speed.");
         cmd.Options.Add(read);
         cmd.Options.Add(write);
@@ -23,6 +23,7 @@ static class BenchCommand
             {
                 "xxh64" => HashKind.Xxh64,
                 "md5" or "both" => HashKind.Both,
+                "sha256" => HashKind.Xxh64 | HashKind.Sha256,
                 _ => (HashKind?)null,
             };
             if (kinds is not HashKind chosen)
@@ -35,6 +36,7 @@ static class BenchCommand
                 Console.WriteLine("CPU");
                 Print(Bench.Hash(256 << 20));
                 if (chosen.HasFlag(HashKind.Md5)) Print(Bench.Hash(256 << 20, "md5"));
+                if (chosen.HasFlag(HashKind.Sha256)) Print(Bench.Hash(256 << 20, "sha256"));
                 if (r.GetValue(read) is string rd)
                 {
                     Console.WriteLine($"Read {rd}");
@@ -42,8 +44,8 @@ static class BenchCommand
                 }
                 foreach (var w in r.GetValue(write) ?? [])
                 {
-                    Console.WriteLine($"Write {w}");
-                    foreach (var l in Bench.Write(CliPath.Full(w), bytes, 16 << 20, kinds: chosen)) Print(l);
+                    Console.WriteLine($"Write {w}");   // SHA-256 is not part of the read-back yet: only xxh64 / MD5 are measured here
+                    foreach (var l in Bench.Write(CliPath.Full(w), bytes, 16 << 20, kinds: chosen & ~HashKind.Sha256)) Print(l);
                 }
                 return 0;
             }

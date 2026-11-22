@@ -25,6 +25,14 @@ public class BenchTests
     }
 
     [Fact]
+    public void Sha256_HashLine()
+    {
+        var line = Bench.Hash(1 << 20, "sha256");
+        Assert.Equal("sha256 in RAM", line.Label);
+        Assert.True(line.Seconds > 0 && line.Bytes > 0);
+    }
+
+    [Fact]
     public void Read_ReadsUpToLimitPerBlockSize()
     {
         using var dir = new TempDir();

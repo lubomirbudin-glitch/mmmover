@@ -20,6 +20,9 @@ Verze 0.3.0 = plán 6 dorovnání 2 ([`2026-10-08-offload-mac-parity-2.md`](docs
 Verze 0.7.0 = plán 10 ([`2026-10-08-offload-mac-parity-3.md`](docs/superpowers/plans/2026-10-08-offload-mac-parity-3.md),
 úkoly 65–70, s úkoly 51 zúženým a 61): **Verify-in-Proxy**, Pozastavit, „Finish interrupted backup“, obsahová kontrola
 dekodérem. Úkoly 52–60 a 62–64 zatím vynechané.
+Verze 0.8.0 = plán 11: **Offload Proof** (SHA-256 v jediném čtení karty, `_REPORT/offload_proof.json`, časové razítko
+OpenTimestamps v Bitcoinu, fronta na pozadí, `mmmover proof verify | status | upgrade`; formát v
+[`../docs/FORMATY.md`](../docs/FORMATY.md), nezávislý ověřovač [`../shared/proof/`](../shared/proof/README.md)).
 
 ## Jak to funguje
 
@@ -93,6 +96,11 @@ z evermeet.cx (Intel), arm64 z osxexperts.net (`ffmpeg81arm.zip`, `ffprobe81arm.
 [CI build](../.github/workflows/mac-apple-silicon.yml), který hlídá SHA-256 a potřebné enkodéry a filtry);
 `braw-decode` se zbuilduje automaticky z `Tools/braw-decode/` (hlavičky BRAW SDK, licence Blackmagic je v nich).
 
+**Hotové buildy z CI** (workflow „Mac Apple Silicon“, běží i na `offload-proof`; `intel=true` přidá druhý job):
+`mmMover-Mac-AppleSilicon-<verze>.zip` (runner `macos-15`, arm64) a `mmMover-Mac-Intel-<verze>.zip` (runner
+`macos-15-intel`, x86_64, ffmpeg/ffprobe z evermeet.cx s pinnutým SHA-256). Oba jsou artefakty běhu a každý prošel celou
+sadou testů a křížovou kontrolou důkazu (`scripts/proof-cross-check.sh`).
+
 ### Vzorek BRAW (testy dekodéru Blackmagic RAW)
 
 `Tools/braw-decode/build.sh` sestaví `Tools/bin/braw-decode` (stačí Xcode; `scripts/build-app.sh` ho sestaví jen když chybí —
@@ -119,6 +127,10 @@ mmmover copy /Volumes/A001 -d … --proxy --classic-verify         # zpětné č
 mmmover copy /Volumes/A001 -d … --proxy --proxy-always           # proxy i pro lehčí originály H.264/HEVC
 mmmover verify /Volumes/RAID_A/2026-10-03/A001 [--report]       # nebo složka dne = každá karta; kód 1 = problém
 mmmover bench --read /Volumes/A001 --write /Volumes/RAID_A --write /Volumes/SHUTTLE_B
+mmmover copy /Volumes/A001 -d … --no-proof                      # bez SHA-256 a bez důkazu (výchozí: zapnuto jen na CPU s instrukcemi SHA)
+mmmover proof verify <soubor | složka karty> [--offline]        # kód 0 OK, 1 FAILED, 2 NOT YET (razítko čeká na Bitcoin)
+mmmover proof status [id]                                       # fronta důkazů (Mac navíc: jeden důkaz podle id)
+mmmover proof upgrade [složka karty | id]                       # zeptá se kalendářů a zapíše `.ots` na disky
 ```
 
 ## Testy

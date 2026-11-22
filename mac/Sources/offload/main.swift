@@ -9,7 +9,8 @@ struct Offload: ParsableCommand {
         commandName: Product.cli,
         abstract: "\(Product.name): camera card offload — read once, write to several disks, verify with xxh64.",
         version: OffloadVersion.string,
-        subcommands: [Copy.self, Append.self, Verify.self, DayReportCommand.self, SummaryReportCommand.self, Bench.self, Ports.self, Luts.self],
+        subcommands: [Copy.self, Append.self, Verify.self, DayReportCommand.self, SummaryReportCommand.self, Bench.self, Ports.self, Luts.self,
+                      ProofCommand.self],
         defaultSubcommand: Copy.self)
 
     /// Errors of a command print as "Error: …" (the Mac is English; Windows prints them in Czech). Parser errors
@@ -174,6 +175,9 @@ struct Copy: ParsableCommand {
     @Flag(help: "Only scan and check, do not copy.")
     var dryRun = false
 
+    @Flag(help: "No Offload Proof: no SHA-256 of the files, no proof manifest, nothing sent to the timestamp calendars.")
+    var noProof = false
+
     @OptionGroup var stage: StageTwo
 
     func run() throws {
@@ -200,6 +204,7 @@ struct Copy: ParsableCommand {
         config.buffers = buffers
         config.verify = !noVerify
         config.allowSameDevice = allowSameDevice
+        config.proof = ProofCLI.proofOn(noProof: noProof)
         try stage.apply(to: &config)
         config.primaryDestination = try stage.primaryIndex(destinations: dest.count)
         try JobRun.run(config, dryRun: dryRun)
@@ -253,6 +258,9 @@ struct Append: ParsableCommand {
     @Flag(help: "Do not read or write the card history (needs --into).")
     var noHistory = false
 
+    @Flag(help: "No Offload Proof: no SHA-256 of the files, no proof manifest, nothing sent to the timestamp calendars.")
+    var noProof = false
+
     @OptionGroup var stage: StageTwo
 
     func run() throws {
@@ -262,6 +270,7 @@ struct Append: ParsableCommand {
         config.buffers = buffers
         config.verify = !noVerify
         config.recordHistory = !noHistory
+        config.proof = ProofCLI.proofOn(noProof: noProof)
         try stage.apply(to: &config)
         var folders = into.map(abs)
         let insight = noHistory ? nil : Copy.inspect(config.source, history: true)
@@ -334,12 +343,15 @@ enum JobRun {
         }
         fflush(stdout)
         if dryRun { return }
+        // Plan 11 (final fix A1): once per job with the proof on a Mac without SHA instructions — how fast it hashes.
+        if config.proof, let note = ProofCLI.rateNote() { print(note) }
 
         signal(SIGINT, SIG_IGN)
         let sigint = DispatchSource.makeSignalSource(signal: SIGINT, queue: .global())
         sigint.setEventHandler {
             fputs("\n" + Msg.cancelling + "\n", stderr)
             job.cancel()
+            ProofCLI.cancelStamp()   // the stamp after the job ends sooner; the entry stays in the queue
         }
         sigint.resume()
 
@@ -350,7 +362,7 @@ enum JobRun {
         var report: OffloadReport?
         var finished = false
         Thread.detachNewThread {
-            report = job.run()
+            report = job.run(log: JobRun.proofLog)
             DispatchQueue.main.async { finished = true }
         }
         while !finished { RunLoop.main.run(mode: .default, before: Date().addingTimeInterval(0.1)) }
@@ -384,7 +396,22 @@ enum JobRun {
         } else if let w = status.warning, w != Msg.historyDelayed, !job.engine.spaceWarnings.contains(w) {
             print(Msg.cliWarning + w)
         }
+        // Plan 11 (design 10): last — the stamp (at most 20 s; a queue entry still retried in the background is waited for
+        // first, at most 30 s) never delays the outcome lines and never changes the exit code.
+        fflush(stdout)
+        for line in ProofCLI.afterJob(job, log: { fputs($0 + "\n", stderr) }) { print(line) }
         if VerifyOptions.exitCode(verify: config.verify, status, report) != 0 { throw ExitCode(1) }
+    }
+
+    /// The job's lines the CLI shows: the proof's (on stderr, as Windows prints the job's log); the others stay quiet as
+    /// before. The status line is cleared first.
+    static func proofLog(_ line: String) {
+        guard line.hasPrefix("proof") else { return }
+        if isatty(STDERR_FILENO) != 0 {
+            fputs("\r\u{1B}[K" + line + "\n", stderr)
+        } else {
+            fputs(line + "\n", stderr)
+        }
     }
 }
 
@@ -586,12 +613,108 @@ struct Luts: ParsableCommand {
     }
 }
 
+/// Plan 11 (Windows `ProofCommand`): `mmmover proof verify <file | card folder> [--offline]` (exit 0 OK, 1 FAILED,
+/// 2 NOT YET), `proof status [<id>]` (the queue, one line per proof) and `proof upgrade [<id> | <card folder>]` (the
+/// queue now, one proof of it, or the .ots files of one card folder in place). The logic is ProofCLI's (OffloadKit).
+struct ProofCommand: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "proof",
+        abstract: "Offload Proof: check a file or a card folder against its proof; see or finish the proofs in the queue.",
+        subcommands: [ProofVerifyCommand.self, ProofStatusCommand.self, ProofUpgradeCommand.self])
+}
+
+struct ProofVerifyCommand: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "verify",
+        abstract: "Check that a file (or every file of a card folder) is unchanged and existed no later than the Bitcoin block its proof is anchored in. Exit 0 = OK, 1 = FAILED, 2 = NOT YET.")
+
+    @Argument(help: "A file of a backup, or a card folder (<root>/<date>/<card>): every file of its proof.")
+    var path: String
+
+    @Flag(help: "Ask no block explorer: check the files, the manifest and what the .ots says (the result is at best NOT YET).")
+    var offline = false
+
+    func run() throws {
+        let path = self.path
+        let offline = self.offline
+        try ProofRun.run { show in
+            await ProofCLI.verify(path: path, offline: offline, progress: show)
+        }
+    }
+}
+
+struct ProofStatusCommand: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "status",
+        abstract: "The proofs in this computer's queue: card, date, generation, state, Bitcoin block and on how many disks.")
+
+    @Argument(help: "The id of one proof in the queue (default: every proof).")
+    var id: String?
+
+    func run() throws {
+        try ProofRun.finish(ProofCLI.status(id: id))
+    }
+}
+
+struct ProofUpgradeCommand: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "upgrade",
+        abstract: "Ask the calendars for the Bitcoin anchor now: every proof in the queue (stamp, upgrade, write onto the disks), one proof of it, or the .ots files of one card folder.")
+
+    @Argument(help: "A card folder: upgrade the .ots files in its _REPORT in place, stamp a proof manifest that has none; or the id of one proof in the queue (without it: every proof in the queue, now).")
+    var target: String?
+
+    func run() throws {
+        let target = self.target
+        try ProofRun.run { _ in
+            await ProofCLI.upgrade(target: target, log: { fputs($0 + "\n", stderr) })
+        }
+    }
+}
+
+/// Runs a `proof` command's work on a task — Ctrl+C cancels it (ProofCLI says "Cancelled.", exit 1) — with its status
+/// line on stderr, then prints what it returned and exits with its code.
+enum ProofRun {
+    final class Box: @unchecked Sendable {
+        var output: ProofCLI.Output = (lines: [], errors: [], exitCode: 1)
+        var showed = false
+    }
+
+    static func run(_ work: @escaping @Sendable (_ show: @escaping (String) -> Void) async -> ProofCLI.Output) throws {
+        let box = Box()
+        let done = DispatchSemaphore(value: 0)
+        let task = Task.detached {
+            let show: (String) -> Void = { line in
+                guard isatty(STDERR_FILENO) != 0 else { return }   // Windows' ConsoleLine: nothing when stderr is redirected
+                box.showed = true
+                fputs("\r\u{1B}[K" + line, stderr)
+            }
+            box.output = await work(show)
+            done.signal()
+        }
+        signal(SIGINT, SIG_IGN)
+        let sigint = DispatchSource.makeSignalSource(signal: SIGINT, queue: .global())
+        sigint.setEventHandler { task.cancel() }
+        sigint.resume()
+        done.wait()
+        sigint.cancel()
+        if box.showed { fputs("\r\u{1B}[K", stderr) }
+        try finish(box.output)
+    }
+
+    /// Lines on stdout, errors on stderr; a code other than 0 is the process's exit code.
+    static func finish(_ output: ProofCLI.Output) throws {
+        for line in output.lines { print(line) }
+        fflush(stdout)
+        for e in output.errors { fputs(e + "\n", stderr) }
+        if output.exitCode != 0 { throw ExitCode(output.exitCode) }
+    }
+}
+
 /// A number as it was most likely typed: "0", "-2", "1.5" (for Msg.notPositiveNumber).
 func numberText(_ v: Double) -> String { Swift.abs(v) < 1e15 && v == v.rounded() ? String(Int64(v)) : String(v) }
 
-func abs(_ p: String) -> String {
-    URL(fileURLWithPath: (p as NSString).expandingTildeInPath).standardizedFileURL.path
-}
+func abs(_ p: String) -> String { ProofCLI.fullPath(p) }
 
 /// One status line on stderr, refreshed twice a second.
 final class ProgressDisplay {

@@ -29,19 +29,59 @@ final class TempDir {
     }
 }
 
-/// Every test run writes history, locks and update checks into a temporary folder, never into the user's own.
-/// Started by the first tempDir() (every test that touches the disk calls it) and by TestMedia.
-let testSettingsDir: String = {
+/// The test run's settings folder itself (created, `OFFLOAD_SETTINGS_DIR` set) — what ProofTestSeams builds on. Everything
+/// else reads `testSettingsDir`, which installs the seams too.
+private let settingsFolder: String = {
     let d = NSTemporaryDirectory() + "offload-tests-\(getpid())"
     try? FileManager.default.createDirectory(atPath: d, withIntermediateDirectories: true)
     setenv("OFFLOAD_SETTINGS_DIR", d, 1)
     return d
 }()
 
+/// Every test run writes history, locks and update checks into a temporary folder, never into the user's own.
+/// Started by the first tempDir() (every test that touches the disk calls it), by ProofTestSeams, by TestMedia and by
+/// every test that reads it — whichever comes first installs the proof's seams with it (M5a: from every entry point).
+let testSettingsDir: String = {
+    let d = settingsFolder
+    ProofTestSeams.install()
+    return d
+}()
+
+/// Plan 11 (Windows `TestEnvironment`): the proof's seams, set once for the whole test run (by the first tempDir(), the
+/// first read of testSettingsDir and every proof test's setUp). The settings folder first, so the proof's locks
+/// (`AppSupport.lockFolder`) are in it; the store under it (`ProofStore.defaultFolderOverride`);
+/// `ProofServiceOptions.default()` with no calendar, no explorer and URLSession only through the stub
+/// (`defaultOverride`), `ProofVerifyOptions.default()` with no explorer either; every test machine "fast" — SHA instructions, 1000 MB/s (`ProofHardware.force`; a test forces its
+/// own and its restore brings this back), so no test depends on the CPU it runs on (the `macos-15-intel` runner too).
+/// Synthetic block headers (OtsNetworkTests.mine, regtest difficulty) pass the proof-of-work check of the faked
+/// explorers; a real header passes either way, and `hasProofOfWork(limit: mainnetPowLimit)` tests Bitcoin's own limit.
+/// Network: only through `OtsHTTP(protocolClasses: [StubURLProtocol.self])`.
+enum ProofTestSeams {
+    private static let installed: Void = {
+        let settings = settingsFolder   // never testSettingsDir: its initialiser installs the seams
+        BitcoinHeaders.powLimitOverride = OtsNetworkTests.regtestPowLimit
+        ProofStore.defaultFolderOverride = settings + "/proof"
+        ProofServiceOptions.defaultOverride = {
+            ProofServiceOptions(protocolClasses: [StubURLProtocol.self], calendars: [], headerSources: [],
+                                allowedCalendar: { $0.hasPrefix("http://stub-") })
+        }
+        // M5b (Windows `ProofVerifyOptions.DefaultOverride`): the verifier asks no explorer by default.
+        ProofVerifyOptions.defaultOverride = {
+            ProofVerifyOptions(protocolClasses: [StubURLProtocol.self], headerSources: [])
+        }
+        _ = ProofHardware.force(hasSha: true, mbps: ProofTestSeams.fastMBps)   // never restored: the run's default
+    }()
+
+    /// The SHA-256 rate every test machine has (Windows `TestEnvironment`).
+    static let fastMBps: Double = 1000
+
+    static func install() { _ = installed }
+}
+
 extension XCTestCase {
     /// A fresh folder, removed after the test.
     func tempDir() -> TempDir {
-        _ = testSettingsDir
+        _ = testSettingsDir   // installs the proof's seams
         let dir = TempDir()
         addTeardownBlock { try? FileManager.default.removeItem(atPath: dir.path) }
         return dir

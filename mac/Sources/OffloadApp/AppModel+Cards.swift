@@ -209,6 +209,9 @@ extension AppModel {
             config.proxy = settings.proxy
             config.tools = settings.tools
             config.dayReport = settings.outputs.dayReport
+            // Plan 11 (design 9, Windows JobConfigs): the Offload Proof switch as it is now (stored, else on with SHA
+            // instructions) — for a copy and an append alike; a job in the queue keeps its own.
+            config.proof = settings.proof.enabled
             var sourceName = names[src]?.name ?? defaultName(src)
             if appendChosen(src), let m = insights[src]?.match {
                 // Into the backup's own card folders (step 2 is not used); the project of the earlier backup.

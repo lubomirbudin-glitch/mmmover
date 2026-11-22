@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<hashlist version="2.0" xmlns="urn:ASC:MHL:v2.0">
+  <creatorinfo>
+    <creationdate>2026-11-20T09:11:28+01:00</creationdate>
+    <hostname>DESKTOP-IG6L214</hostname>
+    <tool version="0.12.0-win">mmMover</tool>
+    <comment>mmMover offload of A001 from C:\Users\PC\mmmover-fixture-src\A001 · verification: read-back</comment>
+  </creatorinfo>
+  <processinfo>
+    <process>transfer</process>
+    <ignore>
+      <pattern>.DS_Store</pattern>
+      <pattern>ascmhl</pattern>
+      <pattern>ascmhl/</pattern>
+      <pattern>_REPORT</pattern>
+      <pattern>_PROXY</pattern>
+    </ignore>
+  </processinfo>
+  <hashes>
+    <hash>
+      <path size="70000" lastmodificationdate="2026-11-20T09:11:11+01:00">Clip 01.mov</path>
+      <xxh64 action="original" hashdate="2026-11-20T09:11:28+01:00">8f08226f3b9d2eb8</xxh64>
+      <xxh128 action="original" hashdate="2026-11-20T09:11:28+01:00">5f7c650f3bbafefeef70598e652ac5da</xxh128>
+    </hash>
+    <hash>
+      <path size="333" lastmodificationdate="2026-11-20T09:11:11+01:00">ä-nfd.txt</path>
+      <xxh64 action="original" hashdate="2026-11-20T09:11:28+01:00">d141fd2b1eaf21f0</xxh64>
+      <xxh128 action="original" hashdate="2026-11-20T09:11:28+01:00">5f09f105a05edc3b449b29eaa220d52e</xxh128>
+    </hash>
+    <hash>
+      <path size="0" lastmodificationdate="2026-11-20T09:11:11+01:00">sub/z.bin</path>
+      <xxh64 action="original" hashdate="2026-11-20T09:11:28+01:00">ef46db3751d8e999</xxh64>
+      <xxh128 action="original" hashdate="2026-11-20T09:11:28+01:00">99aa06d3014798d86001c324468d497f</xxh128>
+    </hash>
+    <hash>
+      <path size="1234" lastmodificationdate="2026-11-20T09:11:11+01:00">sub/émoji 🎬.txt</path>
+      <xxh64 action="original" hashdate="2026-11-20T09:11:28+01:00">7f7ddd733e56ba35</xxh64>
+      <xxh128 action="original" hashdate="2026-11-20T09:11:28+01:00">41e2e910200fad83c9625b8747e207dc</xxh128>
+    </hash>
+    <hash>
+      <path size="4100" lastmodificationdate="2026-11-20T09:11:11+01:00">Žluťoučký kůň.wav</path>
+      <xxh64 action="original" hashdate="2026-11-20T09:11:28+01:00">483e4409a14c1b71</xxh64>
+      <xxh128 action="original" hashdate="2026-11-20T09:11:28+01:00">5f95836ca55bffc1bc6bbf2c59efc403</xxh128>
+    </hash>
+  </hashes>
+</hashlist>

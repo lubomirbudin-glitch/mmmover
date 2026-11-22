@@ -55,7 +55,10 @@ enum Snapshots {
          ("empty", base),
          ("running", running),
          ("finished", finished),
+         ("proof", proof),
+         ("proof-warnings", proofWarnings),
          ("settings-proxy", { settings(.proxy) }),
+         ("settings-verify", { settings(.verify) }),
          ("settings-folders", { settings(.folders) }),
          ("settings-decoders", { settings(.decoders) })]
     }
@@ -150,6 +153,53 @@ enum Snapshots {
         cancelled.text = "The card isn't fully backed up — copy it again in full."
         m.jobs = [job("D002_BMPCC", cancelled), job("C007_VENICE", failed), job("B012_FX6", problem), job("A035_ARRI", done)]
         return m
+    }
+
+    /// Plan 11: three finished cards, each with its proof chip beside the verdicts — waiting for network, anchoring,
+    /// anchored (the tooltips are not in the picture).
+    static func proof() -> AppModel {
+        let m = base()
+        let waiting = proofEntry(.queued, written: [ProofEntry.writtenNone, ProofEntry.writtenNone])
+        let anchoring = proofEntry(.pending, written: [ProofEntry.writtenPending, ProofEntry.writtenPending])
+        var anchored = proofEntry(.complete, written: [ProofEntry.writtenComplete, ProofEntry.writtenComplete])
+        anchored.bitcoinHeight = 925_118
+        anchored.bitcoinTime = Date().addingTimeInterval(-3 * 3600)
+        m.jobs = [job("A033_ARRI", provenCard("A033_ARRI", waiting)), job("A034_ARRI", provenCard("A034_ARRI", anchoring)),
+                  job("A035_ARRI", provenCard("A035_ARRI", anchored))]
+        return m
+    }
+
+    /// Plan 11: anchored on one of the two disks (yellow), and a card whose proof was not created (red).
+    static func proofWarnings() -> AppModel {
+        let m = base()
+        var partly = proofEntry(.complete, written: [ProofEntry.writtenComplete, ProofEntry.writtenPending])
+        partly.bitcoinHeight = 925_118
+        let notCreated = provenCard("B012_FX6", nil, error: ProofMsg.noCardFolder)
+        m.jobs = [job("B012_FX6", notCreated), job("A035_ARRI", provenCard("A035_ARRI", partly))]
+        return m
+    }
+
+    /// A green card (no summary, no thumbnails — three fit the window) with the chip and tooltip of `entry` (or of the
+    /// job's `error`).
+    static func provenCard(_ name: String, _ entry: ProofEntry?, error: String? = nil) -> JobCardState {
+        var c = JobCardState(kind: .done, phase: .done, name: name, sub: "24 files · 1.70 GB")
+        c.title = "\(name) — safe to format"
+        c.text = "All 24 files are on 2 disks and verified (xxHash64)."
+        c.ejectChip = CardChip(text: "Safe to eject", tone: .ok)
+        c.formatChip = CardChip(text: "Safe to format", tone: .ok)
+        c.proofChip = JobProgress.proofChip(enabled: true, error: error, entry: entry)
+        c.proofTooltip = JobProgress.proofTooltip(enabled: true, error: error, entry: entry)
+        c.path = "…/2026-11-20/\(name)/"
+        c.hasReport = true
+        return c
+    }
+
+    static func proofEntry(_ state: ProofState, written: [String]) -> ProofEntry {
+        var e = ProofEntry(id: "snap-proof-\(state.rawValue)", created: Date(), manifest: "offload_proof.json",
+                           digest: String(repeating: "0", count: 64), cardName: "A035_ARRI", date: "2026-11-20",
+                           cardPaths: [raid + "/2026-11-20/A035_ARRI", shuttle + "/2026-11-20/A035_ARRI"], state: state)
+        e.written = written
+        return e
     }
 
     /// One destination nearly full, verification and proxies off, a folder source.

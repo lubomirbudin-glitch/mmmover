@@ -3,6 +3,7 @@ using Offload.Core.Append;
 using Offload.Core.Desktop;
 using Offload.Core.History;
 using Offload.Core.Outputs;
+using Offload.Core.Proof;
 using Offload.Core.Space;
 using Offload.Core.VerifyInProxy;
 
@@ -54,6 +55,11 @@ public sealed class JobConfig(string source, IReadOnlyList<string> destRoots)
     /// Task 2026-10-09: the folder every card's report is copied to on this computer (LocalReports.RootFor of the
     /// profile; CLI --no-local-report = null); null = no local copy (also every test that does not ask for one).
     public string? LocalReports { get; set; }
+    /// Plan 11 (Offload Proof): SHA-256 of every file in the card read (`files[].sha256`) for the proof of the copy. Off by
+    /// default here; the app and the CLI turn it on from the settings (profile `proof`, on by default).
+    public bool Proof { get; set; }
+    /// Plan 11: where the proof queue lives; null = ProofStore.DefaultFolder (%APPDATA%\mmMover\proof).
+    public string? ProofFolder { get; set; }
 }
 
 /// `Finishing` (plan 10): after the proxies, the verification reads what they did not and waits for the other disks.
@@ -117,6 +123,12 @@ public sealed record JobStatus
     public string? Warning { get; init; }
     /// Task 2026-10-09: why the copy of the report on this computer failed (Czech) — a note only, never the job's result.
     public string? LocalReportNote { get; init; }
+    /// Plan 11 (Offload Proof): the queue entry (ProofStore) of the proof this job sealed once its generation's record was
+    /// final; null when the proof was off or none was sealed (cancelled, failed, a repair, "Nothing new").
+    public string? ProofId { get; init; }
+    /// Plan 11: why the proof was not created (English, e.g. a different proof of the generation is there already) — a
+    /// note only, never the job's result.
+    public string? ProofError { get; init; }
 
     /// This status with `line` added to the warnings.
     public JobStatus WithWarning(string line) => this with { Warning = Warning == null ? line : Warning + "\n" + line };
@@ -185,6 +197,20 @@ public sealed class OffloadJob
     /// Tests: called before the verified generation is committed into each card folder (a throw = that commit failed).
     internal Action<string>? BeforeCommit { get; init; }
 
+    /// Plan 11: a proof was sealed and queued (its entry id, also in Status().ProofId) — on the job's thread (or on the
+    /// background retry of the queue, final fix C5); the app's proof service stamps it at once. A listener that throws
+    /// never breaks the job.
+    public event Action<string>? ProofSealed;
+
+    /// Final fix C5: the queue could not take the entry of a sealed proof (its manifests are written) — it is tried again
+    /// in the background after these delays, so the job never waits for it and the manifests are never orphaned once the
+    /// store is back. Status().ProofId (or, after the last try, ProofError) comes then.
+    internal IReadOnlyList<TimeSpan> ProofAddRetries { get; init; } = [TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(3), TimeSpan.FromSeconds(10)];
+
+    /// Final fix C5: the background retry of the queue entry (null when the first try took it, or nothing was sealed) —
+    /// the CLI waits for it (bounded) before it says where the proof is.
+    public Task? ProofQueueing { get; private set; }
+
     public OffloadJob(JobConfig config)
         : this(config, new OffloadOptions
         {
@@ -223,6 +249,7 @@ public sealed class OffloadJob
     public OffloadPlan Prepare()
     {
         if (Plan is { } done) return done;
+        Engine.Options.Proof = Config.Proof;   // plan 11: also for a job made with its own options (tests)
         if (Config.RepairInto is { Count: > 0 } broken)
         {
             var repair = Engine.PrepareRepair(Engine.PlanRepair(Config.Source, broken));
@@ -439,6 +466,12 @@ public sealed class OffloadJob
             // files of the earlier backup that were never read back keep the card from "kartu lze vysunout".
             if (plan.Mode == PlanMode.Append) safe &= plan.UnverifiedEarlier == 0;
             Update(s => s with { SafeToEject = allCopied, SafeToFormat = safe, CopySucceeded = report.Success, Copy = Engine.Snapshot() });
+            // Plan 11 (design 5): the generation's record is final here — ASC MHL written, read back (or not verified at
+            // all) — unless the verification waits for stage 2 (sealed there, after the commit). Never a cancelled copy,
+            // one whose card changed, nor a repair (the data are the backup's). After the verdict (the proof never delays
+            // it) and before every CopyLocally below, so the local report copy carries the manifest.
+            if (Config.Proof && report.VerifyPending != true && !IsCancelled && !Engine.CardChanged && plan.Mode != PlanMode.Repair)
+                SealProof(report, log);
             if (IsCancelled)
             {
                 ForgetStart(log);   // a cancelled copy is not recorded in history (as before plan 10)
@@ -1086,6 +1119,11 @@ public sealed class OffloadJob
             bool safe = committed && final.SafeToFormat && whole is { Failed: 0, Unverified: 0 } && plan.NotInBackup == 0;
             if (notes.Count > 0) Update(st => st.WithWarning(notes[0]));
             Update(st => st with { SafeToFormat = safe, CopySucceeded = st.CopySucceeded != false && final.Success });
+            // Plan 11 (design 5): with verify-in-proxy the record is final only now — verified and committed into every
+            // folder — so the proof (only verified files) is sealed here, still under the folders' lock and before the
+            // CopyLocally of stage 2. Not when nothing was verified (`s` null: cancelled right after the copy, or a
+            // stage that failed) or when cancelled.
+            if (Config.Proof && committed && !IsCancelled && s != null) SealProof(final, log);
             return final;
         }
         catch (Exception e)
@@ -1099,6 +1137,124 @@ public sealed class OffloadJob
         {
             held?.Dispose();
         }
+    }
+
+    /// Plan 11 (Offload Proof, design 5, 6, 10): the final record of the generation → the proof manifest into `_REPORT` of
+    /// every card folder (ProofSeal: a new file only, never over a different one) and its entry into the queue, `queued`
+    /// (the proof service stamps it at the calendars). Written into some folders only: the entry still names every
+    /// destination (ruling R9 — the service writes the .ots only where the manifest is, so it shows "on N of M disks") and
+    /// its lastError the folders that failed. The job's result never changes: a seal that wrote no folder, or threw (the
+    /// queue too), is a log line and Status().ProofError, nothing else.
+    void SealProof(OffloadReport report, Action<string>? log)
+    {
+        string why;
+        try
+        {
+            var now = DateTime.UtcNow;
+            var seal = ProofSeal.Seal(report, now, Environment.MachineName);
+            if (seal == null) why = Msg.ProofNoFiles;
+            else
+            {
+                var name = ProofManifest.FileName(seal.Manifest.Generation);
+                var failed = new List<string>(seal.Errors);
+                int holding = 0;
+                foreach (var d in report.Destinations)
+                {
+                    var path = Path.Combine(d.CardPath, Layout.ReportDirName, name);
+                    if (seal.Written.Contains(path)) holding++;
+                    // Seal skips a card folder that is gone (an unplugged disk) without an error line: named here.
+                    else if (!seal.Errors.Any(e => e.StartsWith(path + ":", StringComparison.Ordinal))) failed.Add($"{path}: {Msg.CardFolderGone}");
+                }
+                foreach (var line in failed) log?.Invoke($"proof: {line}");
+                if (holding == 0) why = failed.Count > 0 ? string.Join("; ", failed) : Msg.ProofNoCardFolder;
+                else
+                {
+                    var entry = new ProofEntry
+                    {
+                        Id = seal.Manifest.Id,
+                        Created = now,
+                        Manifest = name,
+                        Digest = Convert.ToHexStringLower(seal.Digest),
+                        CardName = seal.Manifest.CardName,
+                        Date = seal.Manifest.Date,
+                        Generation = seal.Manifest.Generation,
+                        CardPaths = [.. report.Destinations.Select(d => d.CardPath)],
+                        VolumeSerials = [.. report.Destinations.Select(d => d.VolumeSerial)],
+                        State = ProofState.Queued,
+                        LastError = failed.Count > 0 ? string.Join("; ", failed) : null,
+                    };
+                    var store = new ProofStore(Config.ProofFolder ?? ProofStore.DefaultFolder);
+                    var sealedLine = $"proof: {name} sealed in {holding} of {report.Destinations.Count} card folders — queued for anchoring";
+                    try
+                    {
+                        store.Add(entry);
+                    }
+                    catch (Exception x) when (x is IOException or IOError or UnauthorizedAccessException)
+                    {
+                        // C5: the manifests are on the disks — the entry must follow, without the job waiting for it.
+                        log?.Invoke($"proof: the queue could not take {name} ({x.Message}) — trying again in the background");
+                        ProofQueueing = Task.Run(() => QueueLater(store, entry, name, sealedLine, log));
+                        return;
+                    }
+                    Queued(entry, sealedLine, log);
+                    return;
+                }
+            }
+        }
+        catch (Exception e)
+        {
+            why = e.Message;
+        }
+        log?.Invoke($"proof not created: {why}");
+        Update(s => s with { ProofError = why });
+    }
+
+    /// The entry is in the queue: Status().ProofId, the log line, ProofSealed.
+    void Queued(ProofEntry entry, string line, Action<string>? log)
+    {
+        Update(s => s with { ProofId = entry.Id, ProofError = null });
+        log?.Invoke(line);
+        try { ProofSealed?.Invoke(entry.Id); }
+        catch (Exception x) { log?.Invoke($"proof: a listener failed: {x.Message}"); }
+    }
+
+    /// Final fix C5: the entry the queue did not take, tried again after each of ProofAddRetries (in the background);
+    /// after the last one ProofError — the manifests stay, `mmmover proof upgrade <card folder>` stamps them. Never
+    /// changes anything else of the job; never throws.
+    async Task QueueLater(ProofStore store, ProofEntry entry, string name, string sealedLine, Action<string>? log)
+    {
+        string why = "";
+        try
+        {
+            for (int i = 0; i < ProofAddRetries.Count; i++)
+            {
+                await Task.Delay(ProofAddRetries[i]).ConfigureAwait(false);
+                try
+                {
+                    store.Add(entry);
+                    Queued(entry, sealedLine, log);
+                    return;
+                }
+                catch (Exception x) when (x is IOException or IOError or UnauthorizedAccessException)
+                {
+                    if (store.Get(entry.Id) != null)   // it got there after all (an earlier try wrote it, then failed)
+                    {
+                        Queued(entry, sealedLine, log);
+                        return;
+                    }
+                    why = x.Message;
+                    log?.Invoke($"proof: the queue could not take {name} ({why}) — try {i + 1} of {ProofAddRetries.Count}");
+                }
+            }
+        }
+        catch (Exception x)
+        {
+            why = x.Message;
+        }
+        var error = Msg.ProofQueueFailed(why);
+        try { log?.Invoke($"proof not created: {error}"); }
+        catch (Exception) { }
+        Update(s => s with { ProofError = error });
     }
 
     /// Every copy as the copy left it (nothing read): "written" stays unverified, "failed" stays failed.

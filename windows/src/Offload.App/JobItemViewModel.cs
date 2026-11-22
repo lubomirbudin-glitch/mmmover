@@ -40,6 +40,7 @@ public sealed partial class JobItemViewModel : QueueItem
         Job = job;
         CanEject = canEject;
         Runner = new JobQueue.Runner(job, m => AppLog.Write($"{sourceName}: {m}"));
+        job.ProofSealed += owner.ProofSealed;   // plan 11: on the job's thread — the owner only schedules the queue
         CancelCommand = new RelayCommand(() => { if (owner.AllowedFor(DemoCommand.Cancel, Job.IsPreview)) { Job.Cancel(); Refresh(); } },
             () => owner.AllowedFor(DemoCommand.Cancel, Job.IsPreview));
         EjectCommand = new RelayCommand(() => owner.Eject(this), () => !Ejecting && owner.Allowed(DemoCommand.Eject));

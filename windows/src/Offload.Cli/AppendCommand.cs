@@ -18,13 +18,14 @@ static class AppendCommand
         var allowSame = new Option<bool>("--allow-same-device") { Description = "Allow two destinations on the same volume." };
         var dryRun = new Option<bool>("--dry-run") { Description = "Only scan and check, do not copy (the real run plans again under the folder lock, so it may differ)." };
         var noHistory = new Option<bool>("--no-history") { Description = "Do not read or write the offload history (needs --into)." };
+        var noProof = CopyCommand.NoProofOption();
         var project = CliProject.Create();
         var ntfy = CliNtfy.Create();
         var stageTwo = new StageTwoOptions();
 
         var cmd = new Command("append", "Copy only the new files of a card into its earlier backup (same card folders, next ASC MHL generation).");
         cmd.Arguments.Add(source);
-        foreach (var o in new Option[] { into, chunkMb, buffers, noVerify, allowSame, dryRun, noHistory, project, ntfy }) cmd.Options.Add(o);
+        foreach (var o in new Option[] { into, chunkMb, buffers, noVerify, allowSame, dryRun, noHistory, noProof, project, ntfy }) cmd.Options.Add(o);
         stageTwo.AddTo(cmd);
         cmd.SetAction(r =>
         {
@@ -48,6 +49,7 @@ static class AppendCommand
                     // this is only the fallback — --project gives the settings, not the card's project.
                     Project = picked?.Project,
                     Notify = CliNtfy.Settings(r, ntfy, null),   // until the earlier project is known: --ntfy only
+                    Proof = CopyCommand.ProofOn(r, noProof, profile),   // plan 11: --project's switch, as verify
                 };
                 stageTwo.Apply(r, config, profile);
                 var folders = r.GetValue(into)!.Select(CliPath.Full).ToList();

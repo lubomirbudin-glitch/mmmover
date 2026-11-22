@@ -195,7 +195,7 @@ figcaption { font-size: 9pt; color: var(--muted); margin-top: 2mm; }
     clip thumbnails, proxies with LUTs and a USB connection check. For camera assistants, DITs, data wranglers and editors.
   </div>
   <div class="meta">
-    App version 0.11.1-win · Windows 10 and 11 (64-bit) · portable version, no installation<br>
+    App version 0.12.0-win · Windows 10 and 11 (64-bit) · portable version, no installation<br>
     This manual describes the app <b>mmMover.exe</b> and the command line <b>bin\mmmover.exe</b> from the package <b>mmMover-win-x64-&lt;version&gt;.zip</b>.
   </div>
 </div>
@@ -214,9 +214,10 @@ figcaption { font-size: 9pt; color: var(--muted); margin-top: 2mm; }
     <li><span class="n">8</span><span>Job queue, pause, cancel, ejecting the card<span class="sub">job card, pause, Copy again, notifications (Windows, phone), cancelling, closing the app, ejecting</span></span></li>
     <li><span class="n">9</span><span>Hardware: USB ports and the bottleneck<span class="sub">connections, recommendations, speed test, port names, bottleneck during the copy</span></span></li>
     <li><span class="n">10</span><span>What ends up on the destination disk<span class="sub">folder structure, card and day _REPORT, ascmhl, _PROXY</span></span></li>
-    <li><span class="n">11</span><span>Command line<span class="sub">mmmover copy, append, verify, day-report, summary-report, bench, ports, luts</span></span></li>
-    <li><span class="n">12</span><span>Troubleshooting and FAQ</span></li>
-    <li><span class="n">13</span><span>Licences</span></li>
+    <li><span class="n">11</span><span>Command line<span class="sub">mmmover copy, append, verify, day-report, summary-report, bench, ports, luts, proof</span></span></li>
+    <li><span class="n">12</span><span>Offload Proof<span class="sub">what it proves and what not, the Proof chip, the Settings switch, offline queue, verifying with mmmover proof verify, ots verify and verify_proof.py</span></span></li>
+    <li><span class="n">13</span><span>Troubleshooting and FAQ</span></li>
+    <li><span class="n">14</span><span>Licences</span></li>
   </ol>
 </nav>
 
@@ -565,7 +566,7 @@ selected card) and <b>Report</b> (<span class="q">“PDF · HTML · ASC MHL · C
 </ul>
 <p>Under the rows, red and orange
 messages appear that explain why the offload cannot be started or what will be skipped (a missing LUT, an unreachable proxy folder,
-missing ffmpeg — chapter 12).</p>
+missing ffmpeg — chapter 13).</p>
 <p>When the queue is full and no card is selected, steps 2 and 3 shrink into compact lines (disks with free space and
 one line with the options) to leave more room for the queue.</p>
 
@@ -607,7 +608,7 @@ in the page's bar; the <b class="ui">Save as new project…</b> button creates a
       part of the project) and <b class="ui">Forget removed disks (N)</b> (chapter 3)</td></tr>
   <tr><td><b class="ui">Verification</b></td><td>read-back verification, <b class="ui">Verify the primary disk during proxies</b> and
       <b class="ui">The primary is the first destination (otherwise the fastest disk measured during the copy)</b>, checksum (MD5), <b class="ui">Verify backup…</b> and
-      <b class="ui">Save a verification report</b> (chapters 1, 5 and 8)</td></tr>
+      <b class="ui">Save a verification report</b> (chapters 1, 5 and 8), <b class="ui">Offload Proof — anchor every offload in time</b> (chapter 12)</td></tr>
   <tr><td><b class="ui">Analysis and thumbnails</b></td><td>clip analysis and three frames in the report (chapter 5)</td></tr>
   <tr><td><b class="ui">Proxies</b></td><td>everything about proxies, LUTs and the burn-in preview (chapter 6)</td></tr>
   <tr><td><b class="ui">Report</b></td><td>CSV and ALE clip lists, day report after every card, <b class="ui">Day report…</b>,
@@ -731,7 +732,7 @@ Version 0.2.0 does not know the new 0.3.0 options (checksum, clip lists, day rep
 
 <h3>What is checked before copying</h3>
 <p>Before anything is written, mmMover checks the following. When something is wrong, the job ends with the status <span class="pill bad">Error</span>
-and a message on the job card (meaning and solution in chapter 12):</p>
+and a message on the job card (meaning and solution in chapter 13):</p>
 <ul>
   <li>the source exists and contains files; the destinations exist and can be written to;</li>
   <li>no destination is on the same volume as the card, and no two destinations are on the same volume (that would not be a second copy);</li>
@@ -1070,7 +1071,7 @@ with the copy of the next card. Every job stores the settings it was started wit
       <i>read</i>, <i>write</i>, <i>card</i> or <i>cancelled</i>; the first 5, then <span class="q">“… and N more files
       in the report”</span>) and <b class="ui">Copy again</b> (below). Also yellow: <span class="q">“A001 — copied without
       verification”</span> (verification turned off).</td></tr>
-  <tr><td><span class="pill bad">red</span></td><td><span class="txt-bad">“A001 — offload failed”</span> with the reason (pre-copy check, chapter 12)</td></tr>
+  <tr><td><span class="pill bad">red</span></td><td><span class="txt-bad">“A001 — offload failed”</span> with the reason (pre-copy check, chapter 13)</td></tr>
   <tr><td><span class="pill">grey</span></td><td><span class="q">“A001 — cancelled”</span>: <span class="q">“The card is not completely backed up — copy
       it again in full.”</span>, or after a verified copy <span class="q">“The copy is done and verified; only the processing after the copy was cancelled.”</span></td></tr>
 </table>
@@ -1125,7 +1126,7 @@ where they do not match</b> — with the same settings as the original job and a
     (the number is the repair's generation, chapter 10; when the place is taken, the first free one is used, e.g. <code>neshoda_0002_2</code>).
     You can delete it by hand once you have verified the backup.</li>
   <li>The file on the card must have the same size, time and checksum as at the first copy — when the card has changed in the
-    meantime, the repair writes nothing and the recorded checksum stays (<span class="q">“Repair stopped — nothing was copied. …”</span>, chapter 12).</li>
+    meantime, the repair writes nothing and the recorded checksum stays (<span class="q">“Repair stopped — nothing was copied. …”</span>, chapter 13).</li>
   <li>The repair writes a new generation of the report and ASC MHL to <b>all</b> destinations (like an append), and rewrites the checksum lists,
     clip lists and the day report. The card's history is corrected — after a successful repair the card's line says
     <span class="txt-ok">“— verified, safe to format”</span> again. Clip analysis and proxies are not repeated.</li>
@@ -1166,7 +1167,7 @@ full copy is possible), for an empty card, or for cards with the append option t
 overwrites nothing and writes a new generation of the report and ASC MHL (chapter 10). When there is nothing to copy, it ends
 <span class="pill ok">Done</span> with the text <span class="q">“Nothing new — the backup is complete.”</span> In orange it may warn
 <span class="txt-warn">“5 files of the earlier backup were not verified — Verify backup is recommended.”</span> The append is
-refused before anything is written (a red message on the job card, chapter 12) when the earlier backup is unreachable, its
+refused before anything is written (a red message on the job card, chapter 13) when the earlier backup is unreachable, its
 report or ASC MHL is missing, the backups on the destinations are not the same, the card holds no file of the backup (a different card), there is a file
 with the same name but a different size or date, or another job is appending to the same backup right now (the same card folder is
 only ever appended to once at a time, even from a second mmMover window). Then make a full copy. When the card changed between ticking it and Start,
@@ -1174,7 +1175,7 @@ Start says <span class="q">“Card A001 has changed — it can no longer be appe
 and does not start that card (the others start).</p>
 
 <h3>Two card states and content defects</h3>
-<p>The job card shows two separate chips. <b>Safe to eject</b> (neutral): everything is written to all disks; you can remove the card
+<p>The job card shows two separate chips (and a third, <b>Proof</b>, for Offload Proof — chapter 12). <b>Safe to eject</b> (neutral): everything is written to all disks; you can remove the card
 and insert the next one. <b>Safe to format</b> (the only green one): everything is verified on all disks and the result is written in
 all folders. <b>Do not format the card until it has the Safe to format chip.</b> While verification runs, the chip shows
 <b>Verifying…</b>; when a file or disk failed, it shows <b>Do not format</b>.</p>
@@ -1239,7 +1240,7 @@ Back up again, in full, a card whose copy was cancelled or interrupted by closin
   <li><b>Only the card that was copied</b> is ejected. When you swap or pull out the card in the reader, the button disappears.</li>
   <li>It is not ejected while another job is still copying from the card (<span class="q">“another job is still copying from the card — eject it when that copy finishes”</span>).</li>
   <li>Internal disks, the system disk, network folders and folders added by hand (not whole cards) are never ejected.</li>
-  <li>When ejecting fails, the app shows <span class="q">“Could not eject the card: …”</span> with the reason (chapter 12).</li>
+  <li>When ejecting fails, the app shows <span class="q">“Could not eject the card: …”</span> with the reason (chapter 13).</li>
 </ul>
 <p class="note">Note: actually ejecting the card from the reader has not been tried on all readers yet. If the button
 does not work, use the Windows <b>Safely Remove Hardware</b> icon.</p>
@@ -1358,6 +1359,8 @@ Bottleneck: disk SHUTTLE_B (USB 2.0 (480 Mb/s) — the link is saturated). The c
       │  ├─ A001.xxh64                       <span class="c">← checksums (after an append, new files too)</span>
       │  ├─ A001.md5                         <span class="c">← only with the xxHash64 + MD5 option</span>
       │  ├─ A001_clips.csv                   <span class="c">← clip list (+ A001_clips.ale for Avid)</span>
+      │  ├─ offload_proof.json               <span class="c">← Offload Proof manifest (chapter 12)</span>
+      │  ├─ offload_proof.json.ots           <span class="c">← its time stamp (Bitcoin via OpenTimestamps)</span>
       │  ├─ offload_report_0002.json         <span class="c">← only after an append or repair: generation 2 report</span>
       │  ├─ A001_report_0002.html
       │  ├─ neshoda_0002\                    <span class="c">← only after Copy again: set-aside mismatched copies</span>
@@ -1432,6 +1435,7 @@ bin\mmmover.exe copy --help</pre>
   <tr><td><code>bench</code></td><td>measures the card read speed and the disks' write/read speed; <code>--hash md5</code> also the MD5 speed</td></tr>
   <tr><td><code>ports</code></td><td>USB ports, where and how fast the cards and disks are connected, recommendations (like the Hardware window)</td></tr>
   <tr><td><code>luts</code></td><td>lists the built-in LUTs (id — name)</td></tr>
+  <tr><td><code>proof</code></td><td><code>proof verify &lt;file or card folder&gt;</code> checks an Offload Proof (exit code 0 OK, 1 FAILED, 2 NOT YET), <code>proof status</code> lists the queue, <code>proof upgrade [card folder]</code> completes the time stamps (chapter 12)</td></tr>
 </table>
 
 <h3>Examples</h3>
@@ -1451,7 +1455,9 @@ mmmover summary-report D:\Backup\2026-10-06 -o G:\Reports   # summary report, al
 mmmover bench --read E:\ --write D:\ --gb 2           # card and disk speed
 mmmover ports                                         # ports and recommendations
 mmmover ports --measure --card E:\ --dest D:\         # + measure the real speed
-mmmover luts                                          # list of the built-in LUTs</pre>
+mmmover luts                                          # list of the built-in LUTs
+mmmover proof verify D:\Backup\2026-10-06\A001\CLIP\A001C003.MXF   # was this clip changed since the offload?
+mmmover proof status                                  # the proofs waiting for Bitcoin or for a disk</pre>
 <p class="note">In the examples, <code>mmmover</code> is short for <code>bin\mmmover.exe</code>.</p>
 
 <h3>copy options</h3>
@@ -1477,6 +1483,7 @@ mmmover luts                                          # list of the built-in LUT
   <tr><td class="k"><code>--lut-fallback</code></td><td>the id of a built-in LUT (or <code>none</code>) for clips that <code>auto</code> does not recognise</td></tr>
   <tr><td class="k"><code>--proxy-folder</code></td><td>also copy every proxy to <code>&lt;folder&gt;\&lt;date&gt;\&lt;card&gt;\</code> (only with <code>--proxy</code>)</td></tr>
   <tr><td class="k"><code>--hash</code></td><td><code>xxh64</code> (default) or <code>both</code> = xxHash64 + MD5</td></tr>
+  <tr><td class="k"><code>--no-proof</code></td><td>no Offload Proof (SHA-256 is not computed, no manifest and no time stamp; chapter 12). Without it the command ends with a line <code>Proof: anchoring requested …</code> or <code>Proof: waiting for network …</code></td></tr>
   <tr><td class="k"><code>--no-clip-list</code></td><td>no CSV clip list</td></tr>
   <tr><td class="k"><code>--ale</code></td><td>also a clip list for Avid (ALE)</td></tr>
   <tr><td class="k"><code>--no-day-report</code></td><td>do not make the day report after the copy</td></tr>
@@ -1518,7 +1525,113 @@ refine) and <code>--no-history</code> (then <code>--into</code> is required). Co
 
 <!-- ============ 12 ============ -->
 <section class="chapter" id="ch12">
-<h2 class="ch"><span class="n">12</span>Troubleshooting and FAQ</h2>
+<h2 class="ch"><span class="n">12</span>Offload Proof</h2>
+
+<p>Offload Proof gives every offload a cryptographic proof that <b>these exact files existed, unchanged, no later than a
+given time</b>. Years later you can show that your footage existed on the shooting day and that nobody has touched it since.
+It is on by default on a computer whose processor has SHA instructions (see Settings below) and
+costs no extra reading of the card.</p>
+
+<h3>How it works</h3>
+<ul>
+  <li>While the card is read (once, as always), mmMover also computes the SHA-256 of every file. It runs on its own thread
+      and on a computer with SHA instructions it does not slow the copy down.</li>
+  <li>After the copy is verified, <code>_REPORT\offload_proof.json</code> is written on every destination: the list of all
+      files with their SHA-256 and size and one Merkle root of all of them. The file names do not matter for the proof —
+      renaming files or folders does not break it.</li>
+  <li>The fingerprint (SHA-256) of that manifest is sent to the free public <b>OpenTimestamps</b> calendars, which anchor it
+      in the Bitcoin blockchain. The result is <code>offload_proof.json.ots</code> next to the manifest, on every
+      destination. It is first <i>pending</i> and becomes complete when Bitcoin confirms the anchor, usually within a few
+      hours; mmMover finishes it in the background.</li>
+  <li><b>Only a 32-byte hash with a random nonce leaves the computer</b> — never files, file names or anything about the
+      production. It is safe for productions under NDA.</li>
+</ul>
+
+<h3>What it proves, and what not</h3>
+<p>It proves that the data existed in exactly this state <b>no later than the time of the Bitcoin block</b>. The text in the
+app and in the verifier is always “existed unchanged no later than …”, never “authentic”. It does <b>not</b> prove that
+the footage shows reality, who shot it, or when REC was pressed — only a signature made inside the camera can do that. The
+time on this computer does not matter: the time comes from Bitcoin. A proof is created only for files that were copied
+and (when verification is on) verified; files that failed are listed in the manifest under <code>excluded</code> and the
+proof is marked incomplete.</p>
+
+<h3>The Proof chip on the job card</h3>
+<p>Next to <b>Safe to eject</b> and <b>Safe to format</b> the job card shows a third chip. A proof never delays an offload and
+never changes the two card states; when it fails, it is a red chip and a line in the log.</p>
+<table>
+  <thead><tr><th class="w30">Chip</th><th>What it means</th></tr></thead>
+  <tr><td><span class="pill">Proof: waiting for network</span></td><td>the manifest is written, but no calendar has accepted it yet (no internet). mmMover keeps a queue and tries again later (after 1, 2, 5, 10, 30 minutes, then hourly) — a phone hotspot is enough.</td></tr>
+  <tr><td><span class="pill">Proof: anchoring</span></td><td>the calendars accepted it; Bitcoin confirms the anchor in a few hours. mmMover checks every hour for the first day, then daily. A Bitcoin attestation from a calendar that the block explorers contradict never makes the proof anchored — not later either, when the explorers cannot be reached; mmMover keeps asking the other calendars.</td></tr>
+  <tr><td><span class="pill ok">Proof: anchored</span></td><td>the anchor is in a Bitcoin block (hover for the block number and its time: <span class="q">“the files existed unchanged no later than this”</span>). When no block explorer could be reached, the tooltip says <span class="q">“Bitcoin block N (block time not checked yet) — mmMover checks it again later.”</span>: mmMover asks the explorers again on the same schedule, and a block they contradict after all puts the proof back to <i>anchoring</i>.</td></tr>
+  <tr><td><span class="pill warn">Proof: anchored · on 1 of 2 disks</span></td><td>the proof is complete, but the <code>.ots</code> is not yet on every disk (a disk was unplugged). Connect the other disks and it is written there.</td></tr>
+  <tr><td><span class="pill bad">Proof: not created</span></td><td>the manifest could not be written, or the queue could not take it (mmMover tries again in the background after 1, 3 and 10 seconds first — the job never waits; the manifest stays on the disks and <code>mmmover proof upgrade &lt;card folder&gt;</code> stamps it); the reason is in the tooltip and in the log. The copy itself is not affected.</td></tr>
+</table>
+<p>With Offload Proof turned off, or when nothing was sealed (a cancelled copy, Copy again, a card replaced during a pause,
+a background verification during proxies that verified nothing), there is no chip. A copy that crashed seals no proof of
+the unfinished generation; finishing it (the resume) seals the proof then. The queue lives in <code>%APPDATA%\mmMover\proof</code>; the app works on it in the background (at start,
+every 10 minutes, after each job and when a disk is connected), so the proof is finished even when you close the window and
+open the app later. When only some disks received the proof, they all stay in the queue and the chip says
+<span class="q">“on N of M disks”</span>.</p>
+
+<h3>Settings</h3>
+<p><b class="ui">Settings → Verification → Offload Proof — anchor every offload in time</b> turns it on or off for the current
+project. The hint says <span class="q">“Only a fingerprint (hash) leaves this computer, never files or names. Free
+(OpenTimestamps, Bitcoin).”</span> It is independent of the verification options. <b>With the switch off, SHA-256 is not computed at
+all</b> (also not for append, finishing an interrupted backup or Copy again), so there is no effect on speed. On the command
+line use <code>--no-proof</code>.</p>
+<p>It is on by default when the processor has <b>SHA instructions</b> (most processors since about 2017–2021). Without them
+SHA-256 runs in software at roughly 0.4–0.6 GB/s, slower than a CFexpress or NVMe card reads, and would slow such a card down —
+so on such a computer the switch is off until you turn it on, and under it the app says
+<span class="q">“This computer has no SHA instructions: Offload Proof hashes about N MB/s and can slow cards that read faster than
+that.”</span> (N is measured once on this computer). A value you set always wins. The command line follows the same rule
+without <code>--project</code> and prints that line once per job when the proof is on.</p>
+
+<h3>Verifying a proof</h3>
+<p>Three independent ways, from the simplest:</p>
+<ol>
+  <li><b>mmMover:</b> <code>mmmover proof verify D:\Backup\2026-11-19\A001\CLIP\A001C003.MXF</code>. It finds the manifest
+      in the card folder above the file, checks the file's SHA-256 and size, the Merkle root, that the manifest is the
+      canonical text it was written as, that the <code>.ots</code> is a timestamp of exactly that manifest, and compares the
+      Bitcoin anchor with the block header from two block explorers (<code>blockstream.info</code> and
+      <code>mempool.space</code>) that must agree; a header counts only with its proof of work. The output ends with a
+      <code>RESULT:</code> line. Give a card folder instead of a file to re-check every file of every manifest in it.
+      <code>--offline</code> asks no explorer and only lists what the <code>.ots</code> contains.</li>
+  <li><b>The official OpenTimestamps client:</b> <code>pip install opentimestamps-client</code>, then
+      <code>ots verify offload_proof.json.ots</code> in the <code>_REPORT</code> folder (it finds <code>offload_proof.json</code>
+      beside it). This checks the timestamp of the manifest, independently of mmMover — against <b>your own Bitcoin node</b>
+      (<code>bitcoind</code>, which <code>ots verify</code> asks for the block header). Without a node of your own use
+      <code>mmmover proof verify</code> or <code>verify_proof.py</code> below: they ask two public block explorers instead.
+      <code>ots info offload_proof.json.ots</code> (no node needed) lists the calendars and attestations.</li>
+  <li><b>An open-source Python script without .NET:</b> <code>python verify_proof.py &lt;file or card folder&gt;</code>
+      (the script is in the repository folder <code>shared/proof</code>; Python 3.8 or newer, standard library only). It was
+      written from the format specification and gives the same result and exit codes as <code>mmmover proof verify</code>.</li>
+</ol>
+<p>A manifest with keys a later mmMover version added is not an edit (the canonical check is on the JSON as written); an edited
+manifest is <span class="q">“FAILED — offload_proof.json is not a valid proof manifest (…)”</span>, never a crash. A damaged or
+hostile <code>.ots</code> costs at most 16 block lookups (the lowest blocks; a <code>Warning:</code> line says when more were left out).</p>
+<p>Exit codes of <code>mmmover proof verify</code> and <code>verify_proof.py</code>: <code>0</code> = OK,
+<code>1</code> = FAILED (a file, the manifest, the Merkle root or the <code>.ots</code> does not match, or the block does not match),
+<code>2</code> = NOT YET (the anchor is still pending, <code>--offline</code>, or the block explorers could not be reached or disagreed).
+A changed byte in a clip, in the manifest or in the <code>.ots</code> always gives FAILED.</p>
+<p class="note">A header from a block explorer counts only when it carries Bitcoin's proof of work and two explorers agree; with
+only one reachable explorer the result is OK with a warning. The protection against a forged header is that two independent
+sources agree — for the highest assurance use your own Bitcoin node or the official <code>ots</code> client with a node.</p>
+
+<h3>Other commands</h3>
+<ul>
+  <li><code>mmmover proof status</code> — one line per proof in the queue (card, date, state, block, <span class="q">“on N of M disks”</span>).</li>
+  <li><code>mmmover proof upgrade</code> — contacts the calendars now and writes the completed <code>.ots</code> to the disks.
+      <code>mmmover proof upgrade &lt;card folder&gt;</code> upgrades the <code>.ots</code> lying in that folder's <code>_REPORT</code>; it
+      replaces an <code>.ots</code> only by a strictly more complete one for the same manifest and never touches an <code>.ots</code>
+      whose manifest is not beside it. An <code>.ots</code> whose Bitcoin attestation the block explorers contradict is upgraded
+      like a pending one (never “anchored already”). A proof manifest that has no <code>.ots</code> yet (the queue never took it)
+      is stamped: only the 32-byte nonce'd hash leaves the computer and the <code>.ots</code> is written as a new file.</li>
+</ul>
+</section>
+
+<!-- ============ 13 ============ -->
+<section class="chapter" id="ch13">
+<h2 class="ch"><span class="n">13</span>Troubleshooting and FAQ</h2>
 
 <h3>Starting</h3>
 <table>
@@ -1607,9 +1720,9 @@ refine) and <code>--no-history</code> (then <code>--into</code> is required). Co
 <p>Yes, both versions write the same format (checksum list, report, MHL).</p>
 </section>
 
-<!-- ============ 13 ============ -->
-<section class="chapter" id="ch13">
-<h2 class="ch"><span class="n">13</span>Licences</h2>
+<!-- ============ 14 ============ -->
+<section class="chapter" id="ch14">
+<h2 class="ch"><span class="n">14</span>Licences</h2>
 
 <h3>FFmpeg</h3>
 <p>The package contains <code>bin\ffmpeg.exe</code> and <code>bin\ffprobe.exe</code> — a static FFmpeg build from www.gyan.dev

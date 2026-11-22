@@ -1,3 +1,4 @@
+import CryptoKit
 import Darwin
 import Foundation
 
@@ -33,6 +34,10 @@ public struct OffloadOptions {
     /// written with `verifyPending: true`, without the ASC MHL generation and without the hash lists (the commit after the
     /// verification writes them, spec D.22.5).
     public var deferVerify = false
+    /// Plan 11 (Offload Proof): SHA-256 of every file in the one card read too (`files[].sha256`, the block manifest's
+    /// `sha256`, `hashAlgorithms` with "sha256") — one more consumer of the card's blocks on its own queue. Off: no
+    /// SHA-256 at all, the copy exactly as without the proof. Never in the read-back, never in the ASC MHL.
+    public var proof = false
 
     public init() {}
 }
@@ -245,6 +250,45 @@ final class SourceHasher {
     func wait() { queue.sync {} }
 }
 
+/// Plan 11 (Offload Proof): SHA-256 of every file in the one read of the card — a consumer of the copy's blocks like
+/// `SourceHasher`, on its own serial queue, so it never holds up xxh64 or the card read (only the buffer pool, when it
+/// falls a whole pool behind). It exists only while the proof is on.
+final class Sha256Hasher {
+    private let queue = DispatchQueue(label: "offload.sha256")
+    private var stream: SHA256?
+    /// Per file: 64 lower-case hex digits; nil when the file was not hashed to its end. Read after `wait()`.
+    private(set) var values: [String?]
+
+    init(fileCount: Int) {
+        values = Array(repeating: nil, count: fileCount)
+    }
+
+    func begin() { queue.async { self.stream = SHA256() } }
+
+    func update(_ c: Chunk) {
+        queue.async {
+            self.stream?.update(bufferPointer: UnsafeRawBufferPointer(start: c.buf, count: c.length))
+            c.release()
+        }
+    }
+
+    func finish(_ i: Int) {
+        queue.async {
+            if let s = self.stream { self.values[i] = hexBytes(Data(s.finalize())) }
+            self.stream = nil
+        }
+    }
+
+    /// The SHA-256 of file `i` once the hasher is past it (a writer asks after `finish(i)` was queued).
+    func value(_ i: Int) -> String? { queue.sync { values[i] } }
+
+    /// Task 69: a file the card is not read for — its SHA-256 is the manifest's (nil when the record has none).
+    func setKnown(_ i: Int, _ sha256: String?) { queue.async { self.values[i] = sha256 } }
+
+    func abort() { queue.async { self.stream = nil } }
+    func wait() { queue.sync {} }
+}
+
 /// Writes the stream to one destination. Each destination has its own serial queue, so disks run in parallel.
 final class DestWriter {
     let cardPath: String
@@ -261,6 +305,8 @@ final class DestWriter {
     var hashOf: ((Int) -> UInt64?)?
     /// The hasher's xxh64 and blocks of file `i` (task 69: a file adopted in place).
     var resultOf: ((Int) -> (UInt64?, [UInt64]))?
+    /// Plan 11: the card's SHA-256 of file `i` (from the proof's hasher) — the manifest's `sha256`; nil without the proof.
+    var sha256Of: ((Int) -> String?)?
     private let queue: DispatchQueue
     private var fd: Int32 = -1
     private var partPath = ""
@@ -347,8 +393,10 @@ final class DestWriter {
             self.results[i] = DestFileResult(state: .written, error: nil)
             guard record, let (x, blocks) = self.resultOf?(i), let x,
                   blocks.count == BlockManifest.countFor(file.size, self.options.chunkSize) else { return }
+            let sha256: String? = self.sha256Of?(i)
             self.awaitingFlush.append(ManifestRecord(gen: self.generation, path: file.relPath, size: file.size, modified: file.modifiedUtc,
-                                                     xxh64: hex64(x), blockSize: self.options.chunkSize, blocks: ManifestRecord.hex(blocks)))
+                                                     xxh64: hex64(x), sha256: sha256, blockSize: self.options.chunkSize,
+                                                     blocks: ManifestRecord.hex(blocks)))
         }
     }
 
@@ -423,8 +471,9 @@ final class DestWriter {
     /// the drive (its data may still be in the drive's cache). Only with the card's hashes and blocks that fit the file.
     private func record(_ i: Int, _ f: SourceFile, flushedAlone: Bool) {
         guard let x = hashOf?(i), blockHashes.count == BlockManifest.countFor(f.size, options.chunkSize) else { return }
+        let sha256: String? = sha256Of?(i)
         let r = ManifestRecord(gen: generation, path: f.relPath, size: f.size, modified: f.modifiedUtc, xxh64: hex64(x),
-                               blockSize: options.chunkSize, blocks: ManifestRecord.hex(blockHashes))
+                               sha256: sha256, blockSize: options.chunkSize, blocks: ManifestRecord.hex(blockHashes))
         if flushedAlone { try? ManifestFile.append(cardPath, [r]) } else { awaitingFlush.append(r) }
     }
 
@@ -716,7 +765,9 @@ public final class OffloadEngine {
     /// Task 69: reads the checkpoint's blocks of `f`'s `.offload-part` on every target (F_NOCACHE) and compares them with
     /// the checkpoint; when all agree, the first target's blocks go into the hasher (the card is then read from there) and
     /// the offset the card is read from comes back. Nil = start over (a block that does not read back as recorded).
-    private func resumeFromCheckpoint(_ f: SourceFile, _ cp: PartCheckpoint, targets: [String], hasher: SourceHasher, pool: BufferPool) -> Int64? {
+    /// `sha`: the proof's SHA-256 (plan 11) gets the same blocks.
+    private func resumeFromCheckpoint(_ f: SourceFile, _ cp: PartCheckpoint, targets: [String], hasher: SourceHasher, sha: Sha256Hasher?,
+                                      pool: BufferPool) -> Int64? {
         guard cp.blockSize == options.chunkSize, !cp.blocks.isEmpty, Int64(cp.blocks.count) * Int64(cp.blockSize) <= f.size else { return nil }
         let size = cp.blockSize
         // First every target compared (nothing goes into the hasher before all of them agree).
@@ -735,15 +786,20 @@ public final class OffloadEngine {
         let first = targets[0] + "/" + DestWriter.partName(f.relPath)
         guard let fd = try? IO.openRead(first) else { return nil }
         defer { close(fd) }
+        let consumers = sha == nil ? 1 : 2
         for b in cp.blocks.indices {
             let buf = pool.take()
             guard let n = try? IO.pread(fd, buf, size, Int64(b) * Int64(size), path: first), n == size else {
                 pool.give(buf)
                 hasher.abort()
                 hasher.begin()
+                sha?.abort()
+                sha?.begin()
                 return nil
             }
-            hasher.update(Chunk(buf: buf, length: n, offset: Int64(b) * Int64(size), consumers: 1, pool: pool))
+            let chunk = Chunk(buf: buf, length: n, offset: Int64(b) * Int64(size), consumers: consumers, pool: pool)
+            hasher.update(chunk)
+            sha?.update(chunk)
         }
         resumedBytes += Int64(cp.blocks.count) * Int64(size)
         return Int64(cp.blocks.count) * Int64(size)
@@ -751,6 +807,8 @@ public final class OffloadEngine {
 
     /// Tests (task 69): bytes taken from checkpoints instead of the card.
     public private(set) var resumedBytes: Int64 = 0
+    /// Tests (plan 11): the last `run` had the SHA-256 consumer — only with the proof on.
+    private(set) var ranSha256 = false
 
     /// Seconds paused, to 0.1 s; nil when the job never stood.
     static func pausedField(_ t: TimeInterval) -> Double? {
@@ -773,9 +831,14 @@ public final class OffloadEngine {
 
         let pool = BufferPool(count: options.bufferCount, size: options.chunkSize)
         let hasher = SourceHasher(fileCount: files.count, blockSize: options.chunkSize)
+        // Plan 11: with the proof, SHA-256 is one more consumer of every block; without it there is none at all.
+        let sha: Sha256Hasher? = options.proof ? Sha256Hasher(fileCount: files.count) : nil
+        ranSha256 = sha != nil
+        let hashers = sha == nil ? 1 : 2
         for w in ws {
             w.hashOf = { hasher.hash($0) }
             w.resultOf = { hasher.result($0) }
+            if let sha { w.sha256Of = { sha.value($0) } }
         }
         var sourceErrors: [String?] = Array(repeating: nil, count: files.count)
         let pausedBefore = pauses.pausedTotal
@@ -811,6 +874,8 @@ public final class OffloadEngine {
             // Task 69: a file complete on every destination with its manifest record is not read again.
             if let rec = plan.known?[i] ?? nil, let blocks = rec.blockValues() {
                 hasher.setKnown(i, rec.xxh64Value, blocks)
+                // R5: a malformed sha256 leaves only the SHA-256 out (the file stays known by its xxh64).
+                sha?.setKnown(i, rec.sha256Value)
                 ws.forEach { $0.adopt(i, f, record: false) }
                 continue
             }
@@ -818,12 +883,13 @@ public final class OffloadEngine {
             let targets = (plan.hashOnly?[i] ?? false) ? [] : ws.indices.filter { mask[$0] }.map { ws[$0] }
             let placed = ws.indices.filter { !mask[$0] || (plan.hashOnly?[i] ?? false) }.map { ws[$0] }
             hasher.begin()
+            sha?.begin()
             var failure: String?
             var offset: Int64 = 0
             // Task 69: a part goes on from the checkpoint every destination it is written to has — once its blocks there
             // read back as the checkpoint says (else it starts over).
             if let cp = plan.resume?[i] ?? nil, !targets.isEmpty,
-               let fed = resumeFromCheckpoint(f, cp, targets: targets.map(\.cardPath), hasher: hasher, pool: pool) {
+               let fed = resumeFromCheckpoint(f, cp, targets: targets.map(\.cardPath), hasher: hasher, sha: sha, pool: pool) {
                 offset = fed
                 targets.forEach { $0.beginResume(f, cp) }
             } else {
@@ -846,8 +912,9 @@ public final class OffloadEngine {
                     }
                 }
                 if failure != nil || n == 0 { pool.give(buf); break }
-                let chunk = Chunk(buf: buf, length: n, offset: offset, consumers: targets.count + 1, pool: pool)
+                let chunk = Chunk(buf: buf, length: n, offset: offset, consumers: targets.count + hashers, pool: pool)
                 hasher.update(chunk)
+                sha?.update(chunk)
                 targets.forEach { $0.write(chunk) }
                 offset += Int64(n)
                 readCounter.add(n)
@@ -865,17 +932,20 @@ public final class OffloadEngine {
             if let failure {
                 sourceErrors[i] = failure
                 hasher.abort()
+                sha?.abort()
                 // Never a copy already at its place (task 69): only the parts this copy wrote go.
                 targets.forEach { $0.abort(i, reason: "source: \(failure)") }
                 placed.forEach { $0.abortQuietly(i, reason: "source: \(failure)") }
                 lock.lock(); errorCount += 1; lock.unlock()
             } else {
                 hasher.finish(i)
+                sha?.finish(i)   // before the writers: their manifest record asks for it
                 targets.forEach { $0.finish(i, f) }
                 placed.forEach { $0.adopt(i, f, record: true) }
             }
         }
         hasher.wait()
+        sha?.wait()
         ws.forEach { $0.wait() }
         copying.leave()   // past the last file: a pause pressed now stands before the read-back's first file (or in stage 2)
         fileBlocks = hasher.blocks
@@ -905,7 +975,7 @@ public final class OffloadEngine {
         setPhase(.report)
         var report = OffloadReport.build(plan: plan, hashes: hasher.hashes, sourceErrors: sourceErrors,
                                          destResults: ws.map(\.results), verified: options.verify && !deferring && !isCancelled,
-                                         started: started, copyFinished: copyFinished, finished: finished)
+                                         started: started, copyFinished: copyFinished, finished: finished, sha256: sha?.values)
         report.generation = plan.generation > 1 ? plan.generation : nil
         report.project = plan.project
         report.copyPausedSeconds = OffloadEngine.pausedField(copyPaused)

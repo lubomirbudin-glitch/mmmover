@@ -39,6 +39,9 @@ final class JobItem: ObservableObject, Identifiable {
     @Published var ejecting = false
     /// Task 70: the user has looked at the content defects ("Checked — the card can be formatted").
     @Published var contentConfirmed = false
+    /// Plan 11, final fix C5: the job ended while its proof's queue entry was still retried — the tick refreshes the card
+    /// once that is over (AppModel.checkProofQueueing).
+    var proofQueueWatched = false
     @Published private(set) var thumbs: [ClipThumb] = []
     @Published private(set) var moreThumbs = 0
     let progress = JobProgress(now: Date())
@@ -231,6 +234,16 @@ final class AppModel: ObservableObject {
     @Published var dayReportsRunning = 0
     /// Day reports, one at a time, off the main thread (the PDF prints on the main run loop meanwhile).
     let dayQueue = DispatchQueue(label: "app.day", qos: .userInitiated)
+    /// Plan 11 (AppModel+Proof): what the proof service last saved of each proof — the proof chips of this session's
+    /// cards read it here, never from the disk.
+    @Published var proofEntries: [String: ProofEntry] = [:]
+    /// Plan 11: the proof queue in the background; nil in previews and once quitting.
+    var proofRunner: ProofRunner?
+    var proofStore: ProofStore?
+    /// Plan 11: Settings › Verify on a Mac without SHA instructions — its SHA-256 rate (MB/s), measured once off the main
+    /// thread; nil until then.
+    @Published var proofRate: Double?
+    var proofRateAsked = false
     var inspecting: Set<String> = []
     var inspectAgain: Set<String> = []
     let inspectQueue = DispatchQueue(label: "app.inspect", qos: .userInitiated, attributes: .concurrent)
@@ -266,19 +279,26 @@ final class AppModel: ObservableObject {
         loadHistory()
         refreshVolumes()
         refreshDestinations()
+        startProofs()   // plan 11: what an earlier session or the CLI left in the proof queue
         let nc = NSWorkspace.shared.notificationCenter
         for name in [NSWorkspace.didMountNotification, NSWorkspace.didUnmountNotification, NSWorkspace.didRenameVolumeNotification] {
+            let mounted = name == NSWorkspace.didMountNotification
             observers.append(nc.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
                 Task { @MainActor in
                     self?.refreshVolumes()
                     self?.refreshDestinations()
+                    // Plan 11: a disk connected again gets the finished proof of its card folders.
+                    if mounted { self?.requestProofs() }
                 }
             })
         }
         // Common modes: the ticks keep coming while a menu or an alert is open.
         let tick = Timer(timeInterval: 0.33, repeats: true) { [weak self] _ in Task { @MainActor in self?.tick() } }
         let health = Timer(timeInterval: 5, repeats: true) { [weak self] _ in Task { @MainActor in self?.refreshDestinations() } }
-        for t in [tick, health] {
+        let proofs = Timer(timeInterval: AppModel.proofInterval, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.requestProofs() }
+        }
+        for t in [tick, health, proofs] {
             RunLoop.main.add(t, forMode: .common)
             timers.append(t)
         }
@@ -302,6 +322,7 @@ final class AppModel: ObservableObject {
             j.refresh()
             j.resolveChainIfNeeded(portNames: settings.portNames)
         }
+        checkProofQueueing()
         // A copy started or ended: the Hardware window's measure button and hint follow.
         let running = copyRunning
         if running != shownCopyRunning {
@@ -706,6 +727,7 @@ final class AppModel: ObservableObject {
         jobs.append(item)
         let oneAtATime = settings.oneJobAtATime
         item.oneAtATime = oneAtATime
+        item.job.proofSealed = proofSealedHandler(for: item)   // plan 11: the stamp at once, the chip follows
         copyQueue.async { [weak self] in
             // Cancelled while queued: it never runs, but the queue still reports it finished.
             if item.job.isCancelled {
@@ -713,20 +735,20 @@ final class AppModel: ObservableObject {
                 return
             }
             item.recordCopiedCard()
-            let needsPost = item.job.runCopy()
+            let needsPost = item.job.runCopy(log: { NSLog("%@", $0) })
             DispatchQueue.main.async {
                 item.refresh()
                 self?.copyFinished(item)
             }
             if needsPost && oneAtATime {
-                item.job.runPost()
+                item.job.runPost(log: { NSLog("%@", $0) })
                 DispatchQueue.main.async {
                     self?.jobFinished(item)
                     self?.writeDayReports(item)
                 }
             } else if needsPost {
                 self?.postQueue.async {
-                    item.job.runPost()
+                    item.job.runPost(log: { NSLog("%@", $0) })
                     DispatchQueue.main.async {
                         self?.jobFinished(item)
                         self?.writeDayReports(item)
@@ -748,6 +770,7 @@ final class AppModel: ObservableObject {
     }
 
     func jobFinished(_ item: JobItem) {
+        watchProofQueueing(item)   // first: a queue retry that ends before refresh() must still reach the chip
         item.refresh()
         loadHistory()   // the card's line follows ("Backed up … — verified, safe to format")
         // The next estimate (Windows ruling M2: a cancelled job or an unfinished stage 2 teaches nothing).

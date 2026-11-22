@@ -28,6 +28,25 @@ public struct OutputSettings: Codable, Equatable {
     }
 }
 
+/// "proof" in the settings (plan 11, design 9; Windows `ProofSettings`): Offload Proof — on by default where the CPU has
+/// SHA instructions.
+public struct ProofSettings: Codable, Equatable {
+    /// Every offload gets a proof (SHA-256 of every file in the card read, the manifest in `_REPORT`, anchored with
+    /// OpenTimestamps); off = no SHA-256 is computed at all. Not stored (first run, an older version's settings, a section
+    /// without the key): on with SHA instructions, off without (final fix A1, ruling R12 — software SHA-256 would slow a
+    /// fast card); a stored value always wins.
+    public var enabled: Bool
+
+    public init() { enabled = ProofHardware.hasShaInstructions }
+
+    /// A missing key keeps its default (a section written by an older or newer version); keys of a newer version stay
+    /// in the file (SettingsStore.mergedSections).
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        enabled = try c.decodeIfPresent(Bool.self, forKey: .enabled) ?? ProofHardware.hasShaInstructions
+    }
+}
+
 /// The app's settings (UserDefaults key "settings", JSON). Same keys as Windows settings.json.
 /// `portNames`: the user's names for USB sockets (`UsbConnector.id` → name).
 public struct AppSettings: Codable, Equatable {
@@ -55,6 +74,8 @@ public struct AppSettings: Codable, Equatable {
     /// finished — verification, proxies, report (user requirement 2026-10-11). Off (default): the next card copies
     /// while the previous one's proxies render.
     public var oneJobAtATime = false
+    /// Offload Proof (plan 11) — `proof` (`{"enabled": Bool}`).
+    public var proof = ProofSettings()
 
     /// The JSON object last read (unknown keys of newer versions); written back under the known keys on save.
     public var raw: [String: Any] = [:]
@@ -63,17 +84,18 @@ public struct AppSettings: Codable, Equatable {
 
     enum CodingKeys: String, CodingKey {
         case destRoots, verify, analyzeClips, proxy, tools, portNames, autoDestinations, ignoredVolumes, naming, hash, outputs
-        case verifyInProxy, verifyPrimary, appearance, oneJobAtATime
+        case verifyInProxy, verifyPrimary, appearance, oneJobAtATime, proof
     }
 
     public init() {}
 
     public static func == (a: AppSettings, b: AppSettings) -> Bool {
-        a.destRoots == b.destRoots && a.verify == b.verify && a.analyzeClips == b.analyzeClips && a.proxy == b.proxy
+        let same: Bool = a.destRoots == b.destRoots && a.verify == b.verify && a.analyzeClips == b.analyzeClips && a.proxy == b.proxy
             && a.tools == b.tools && a.portNames == b.portNames && a.autoDestinations == b.autoDestinations
             && a.ignoredVolumes == b.ignoredVolumes && a.naming == b.naming && a.hash == b.hash && a.outputs == b.outputs
             && a.verifyInProxy == b.verifyInProxy && a.verifyPrimary == b.verifyPrimary && a.appearance == b.appearance
             && a.oneJobAtATime == b.oneJobAtATime
+        return same && a.proof == b.proof
     }
 }
 
@@ -127,6 +149,7 @@ public enum SettingsStore {
             return true
         }
         read("oneJobAtATime") { v in bool(v).map { s.oneJobAtATime = $0 } != nil }
+        read("proof") { v in section(v, as: ProofSettings.self).map { s.proof = $0 } != nil }
         read("appearance") { v in
             guard let a = v as? String else { return false }
             s.appearance = a.isEmpty ? "dark" : a
@@ -140,6 +163,7 @@ public enum SettingsStore {
     static let mergedSections: [String: Set<String>] = [
         "proxy": keys(of: ProxySettings()), "tools": keys(of: ExternalTools()),
         "naming": keys(of: NamingSettings()), "outputs": keys(of: OutputSettings()),
+        "proof": keys(of: ProofSettings()),
     ]
 
     static func keys(of value: Any) -> Set<String> { Set(Mirror(reflecting: value).children.compactMap(\.label)) }

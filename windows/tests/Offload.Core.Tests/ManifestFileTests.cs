@@ -42,6 +42,55 @@ public class ManifestFileTests
         Assert.Equal(new string('a', 32), all[0].Hashes()!.Value.Xxh128);
     }
 
+    // Plan 11: the proof's SHA-256 goes into the record (64 lower-case hex digits) and comes back with the hashes; a
+    // record without it has no "sha256" key at all.
+    [Fact]
+    public void Record_RoundTripsSha256()
+    {
+        using var dir = new TempDir();
+        var card = Card(dir);
+        var sha = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+        ManifestFile.Append(card, new ManifestRecord
+        {
+            Path = "a.mov", Size = 4096, Modified = T, Xxh64 = "0123456789abcdef", Md5 = new string('b', 32), Xxh128 = new string('a', 32),
+            Sha256 = sha, BlockSize = 4096, Blocks = ManifestRecord.Hex([1UL]),
+        });
+        ManifestFile.Append(card, FileRecord("b.mov", 2));
+
+        var lines = File.ReadAllText(ManifestFile.PathIn(card)).Split('\n', StringSplitOptions.RemoveEmptyEntries);
+        Assert.Contains($"\"sha256\":\"{sha}\"", lines[0]);
+        Assert.DoesNotContain("sha256", lines[1]);
+        var all = ManifestFile.Read(card);
+        Assert.Equal(sha, all[0].Sha256);
+        var h = all[0].Hashes()!.Value;
+        Assert.Equal((0x0123456789abcdefUL, new string('b', 32), new string('a', 32), sha), (h.Xxh64!.Value, h.Md5Hex, h.Xxh128, h.Sha256));
+        Assert.Null(all[1].Sha256);
+        Assert.Null(all[1].Hashes()!.Value.Sha256);
+        // Upper-case digits read as the same hash (as md5), given back lower-case.
+        Assert.Equal(sha, new ManifestRecord { Path = "a.mov", Xxh64 = "0123456789abcdef", Sha256 = sha.ToUpperInvariant() }.Hashes()!.Value.Sha256);
+    }
+
+    // A sha256 that is not 64 hex digits is dropped alone: the record's xxh64, md5 and xxh128 still count — a field only
+    // the proof uses never makes a good copy look unrecorded (the proof never changes the job). A bad md5 is as before.
+    [Theory]
+    [InlineData("zz")]
+    [InlineData("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b85")]
+    [InlineData("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855ff")]
+    [InlineData("g3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855")]
+    [InlineData("")]
+    public void Record_MalformedSha256_DropsOnlySha256(string sha256)
+    {
+        static ManifestRecord Record(string? sha256, string? md5 = null) => new()
+        {
+            Path = "a.mov", Size = 4096, Xxh64 = "0123456789abcdef", Md5 = md5, Xxh128 = new string('a', 32), Sha256 = sha256,
+            BlockSize = 4096, Blocks = ManifestRecord.Hex([1UL]),
+        };
+        var h = Record(sha256, md5: new string('b', 32)).Hashes()!.Value;
+        Assert.Equal((0x0123456789abcdefUL, new string('b', 32), new string('a', 32)), (h.Xxh64!.Value, h.Md5Hex, h.Xxh128));
+        Assert.Null(h.Sha256);
+        Assert.Null(Record(null, md5: "zz").Hashes());   // a bad md5: unchanged
+    }
+
     // A crash in the middle of a line: that line is skipped, the next append starts on its own line.
     [Fact]
     public void TornLine_IsSkipped_AndTheNextRecordIsWhole()

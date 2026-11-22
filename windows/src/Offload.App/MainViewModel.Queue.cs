@@ -465,6 +465,7 @@ public sealed partial class MainViewModel
     {
         if (Find(job) is not JobItemViewModel item) return;   // a verification has no stage 2: OnJobFinished follows
         item.Refresh();
+        WatchProofQueueing(item);
         Chime(item);   // ruling I2: only once everything is verified — with verify-in-proxy at the end of stage 2
         NotifyCopyDone(item);   // spec 4.3: "safe to eject the card" while stage 2 still runs
         if (!closing) ReloadHistory();   // the job has just recorded the card: its line says "Backed up"
@@ -488,6 +489,7 @@ public sealed partial class MainViewModel
                 if (j.Job.Report is { } r) rates.Learn(r, j.Job.Config.AnalyzeClips, j.Job.Config.Proxy, j.Stage2Elapsed, endedAs: j.Phase);   // the next estimate (M2)
             }
             item.Refresh();
+            if (item is JobItemViewModel watched) WatchProofQueueing(watched);
             if (item is JobItemViewModel finished) Chime(finished);
             if (!item.Alerted) Alert(item);
             if (QueueRules.NotifyAtJobEnd(item.Notified) && item is JobItemViewModel ended)
@@ -562,6 +564,7 @@ public sealed partial class MainViewModel
         ticker.Stop();
         healthTimer.Stop();
         updateTimer.Stop();
+        StopProofs();
         queue.Dispose();
         SaveNow();
         return true;

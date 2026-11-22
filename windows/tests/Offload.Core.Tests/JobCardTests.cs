@@ -1,5 +1,6 @@
 using Offload.Core.Desktop;
 using Offload.Core.Hardware;
+using Offload.Core.Proof;
 
 namespace Offload.Core.Tests;
 
@@ -310,5 +311,83 @@ public class JobCardTests
         Assert.Equal("Waiting for a paused job.", JobCard.WaitingHint(JobCard.Headline("B012", waiting, null, Disks, blockedByPaused: true)));
         Assert.Null(JobCard.WaitingHint(JobCard.Headline("B012", waiting, null, Disks)));
         Assert.Null(JobCard.WaitingHint(JobCard.Headline("B012", new JobStatus { Phase = JobPhase.Copying }, null, Disks, blockedByPaused: true)));
+    }
+
+    // Plan 11 (Offload Proof, spec „Fronta a stavy“): the third chip of the card row — where the proof of this offload is
+    // in the queue; none while the proof is off or nothing was sealed.
+    static ProofEntry Proof(ProofState state, params string[] written) => new()
+    {
+        Id = "0f8d3c9a-6b1e-4c2d-9a7f-1e2d3c4b5a69",
+        State = state,
+        CardPaths = [.. written.Select((_, i) => $@"D:\RAID_{i}\2026-11-19\A001")],
+        Written = [.. written],
+    };
+
+    [Fact]
+    public void ProofChip_OffOrNothingSealed_NoChip()
+    {
+        Assert.Null(JobCard.ProofChip(false, null, Proof(ProofState.Complete, "complete")));
+        Assert.Null(JobCard.ProofChip(false, Msg.ProofNoFiles, null));
+        Assert.Null(JobCard.ProofChip(true, null, null));
+        Assert.Null(JobCard.ProofTooltip(true, null, null));
+        Assert.Null(JobCard.ProofTooltip(false, Msg.ProofNoFiles, null));
+    }
+
+    [Fact]
+    public void ProofChip_Queued_WaitingForNetwork()
+    {
+        var e = Proof(ProofState.Queued, "none", "none");
+        Assert.Equal(new CardChip("Proof: waiting for network", ChipTone.Neutral), JobCard.ProofChip(true, null, e));
+        Assert.Null(JobCard.ProofTooltip(true, null, e));
+    }
+
+    [Fact]
+    public void ProofChip_Pending_Anchoring_FinishedInTheBackground()
+    {
+        var e = Proof(ProofState.Pending, "pending", "pending");
+        Assert.Equal(new CardChip("Proof: anchoring", ChipTone.Neutral), JobCard.ProofChip(true, null, e));
+        Assert.Equal("Bitcoin confirms the anchor in a few hours. mmMover finishes it in the background — keep it running or open it later.",
+            JobCard.ProofTooltip(true, null, e));
+    }
+
+    [Fact]
+    public void ProofChip_CompleteOnEveryDisk_Anchored_BlockAndLocalTime()
+    {
+        var e = Proof(ProofState.Complete, "complete", "complete");
+        e.BitcoinHeight = 912345;
+        e.BitcoinTime = new DateTime(2026, 11, 19, 23, 41, 7, DateTimeKind.Utc);
+        var plusOne = TimeZoneInfo.CreateCustomTimeZone("test+1", TimeSpan.FromHours(1), "test+1", "test+1");
+        Assert.Equal(new CardChip("Proof: anchored", ChipTone.Ok), JobCard.ProofChip(true, null, e));
+        Assert.Equal("Bitcoin block 912345 · 2026-11-20 00:41 — the files existed unchanged no later than this.", JobCard.ProofTooltip(true, null, e, plusOne));
+        Assert.Contains("Bitcoin block 912345 · ", JobCard.ProofTooltip(true, null, e));   // the PC's own time zone
+        // The explorers did not answer (the proof is complete anyway): never as if the block were checked (final fix C3).
+        e.BitcoinTime = null;
+        Assert.Equal("Bitcoin block 912345 (block time not checked yet) — mmMover checks it again later.", JobCard.ProofTooltip(true, null, e, plusOne));
+    }
+
+    [Fact]
+    public void ProofChip_CompleteNotOnEveryDisk_Warning_ConnectTheOthers()
+    {
+        var e = Proof(ProofState.Complete, "complete", "pending");
+        e.BitcoinHeight = 912345;
+        var chip = JobCard.ProofChip(true, null, e);
+        Assert.Equal(new CardChip("Proof: anchored · on 1 of 2 disks", ChipTone.Warning), chip);
+        Assert.Contains("1 of 2", chip!.Text);
+        Assert.Equal("Connect the other disks — mmMover writes the finished proof onto them.", JobCard.ProofTooltip(true, null, e));
+        // A partial seal (ruling R9): the entry keeps every disk, the one without the manifest counts as missing.
+        Assert.Equal("Proof: anchored · on 2 of 3 disks", JobCard.ProofChip(true, null, Proof(ProofState.Complete, "complete", "none", "complete"))!.Text);
+        Assert.Equal("Proof: anchored · on 0 of 1 disk", JobCard.ProofChip(true, null, Proof(ProofState.Complete, "none"))!.Text);
+    }
+
+    [Fact]
+    public void ProofChip_NotCreated_Error_TheReasonInTheTooltip()
+    {
+        Assert.Equal(new CardChip("Proof: not created", ChipTone.Error), JobCard.ProofChip(true, Msg.ProofNoCardFolder, null));
+        Assert.Equal(Msg.ProofNoCardFolder, JobCard.ProofTooltip(true, Msg.ProofNoCardFolder, null));
+        // An entry the queue could not finish (damaged): red as well, with the queue's reason.
+        var failed = Proof(ProofState.Failed, "none");
+        failed.LastError = "the entry is damaged (manifest name or digest) — the proof cannot be finished";
+        Assert.Equal(new CardChip("Proof: not created", ChipTone.Error), JobCard.ProofChip(true, null, failed));
+        Assert.Equal(failed.LastError, JobCard.ProofTooltip(true, null, failed));
     }
 }

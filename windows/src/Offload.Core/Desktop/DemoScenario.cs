@@ -143,10 +143,10 @@ public static class DemoScenario
             ProxyStatus = ProxyStatus.Done,
             Thumbnails = thumbnail != null && i < 5 ? [new Thumbnail(thumbnail(i), "a"), new Thumbnail(thumbnail(i), "b"), new Thumbnail(thumbnail(i), "c")] : [],
         }).ToList();
-        var config = new JobConfig(source, roots) { Proxy = new ProxySettings { Enabled = true } };
+        var config = new JobConfig(source, roots) { Proxy = new ProxySettings { Enabled = true }, Proof = true };
         return OffloadJob.ForPreview(config, Plan(source, "A035_ARRI", roots, files), () => new JobStatus
         {
-            Phase = JobPhase.Done, SafeToEject = true, SafeToFormat = true, CopySucceeded = true, ProxiesDone = 24,
+            Phase = JobPhase.Done, SafeToEject = true, SafeToFormat = true, CopySucceeded = true, ProxiesDone = 24, ProofId = AnchoredProof,
         }, report);
     }
 
@@ -182,12 +182,31 @@ public static class DemoScenario
                 ? new VerifyInProxy.ContentResult { State = VerifyInProxy.ContentResult.Warn, Kind = "decode", Timecode = "01:00:12:05", Message = "corrupt decoded frame", Jpeg = picture?.Invoke(i) }
                 : new VerifyInProxy.ContentResult(),
         }).ToList();
-        var config = new JobConfig(source, roots) { Proxy = new ProxySettings { Enabled = true } };
+        var config = new JobConfig(source, roots) { Proxy = new ProxySettings { Enabled = true }, Proof = true };
         return OffloadJob.ForPreview(config, Plan(source, "A037_ARRI", roots, files), () => new JobStatus
         {
             Phase = JobPhase.Done, SafeToEject = true, SafeToFormat = true, CopySucceeded = true, ProxiesDone = 12, ContentWarnings = 1,
-            Warning = Msg.ContentWarnings(1),
+            Warning = Msg.ContentWarnings(1), ProofId = AnchoringProof,
         }, report);
+    }
+
+    const string AnchoredProof = "4f6a2d1e-8b3c-4e5f-9a0b-1c2d3e4f5a35";
+    const string AnchoringProof = "4f6a2d1e-8b3c-4e5f-9a0b-1c2d3e4f5a37";
+
+    /// Plan 11: the queue entries of the demo's proofs (the window shows them instead of the real queue, which stays
+    /// off in the demo) — A035 anchored in Bitcoin on both disks, A037 still anchoring.
+    public static IReadOnlyList<Proof.ProofEntry> Proofs(IReadOnlyList<string> roots)
+    {
+        Proof.ProofEntry Entry(string id, string card, Proof.ProofState state, string written) => new()
+        {
+            Id = id, Created = Shot, Manifest = "offload_proof.json", CardName = card, Date = "2026-10-07", State = state,
+            CardPaths = [.. roots.Select(r => System.IO.Path.Combine(r, "2026-10-07", card))],
+            Written = [.. roots.Select(_ => written)],
+        };
+        var anchored = Entry(AnchoredProof, "A035_ARRI", Proof.ProofState.Complete, Proof.ProofEntry.WrittenComplete);
+        anchored.BitcoinHeight = 912345;
+        anchored.BitcoinTime = Shot.AddHours(3);
+        return [anchored, Entry(AnchoringProof, "A037_ARRI", Proof.ProofState.Pending, Proof.ProofEntry.WrittenPending)];
     }
 
     /// Obr. 3, yellow: B012_FX6 with one file that does not match on the second disk.

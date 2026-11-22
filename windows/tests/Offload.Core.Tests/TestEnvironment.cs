@@ -1,5 +1,6 @@
 using System.Runtime.CompilerServices;
 using Offload.Core.History;
+using Offload.Core.Proof;
 
 namespace Offload.Core.Tests;
 
@@ -34,6 +35,21 @@ static class TestEnvironment
         Environment.SetEnvironmentVariable("OFFLOAD_SETTINGS_DIR", appData);
         // Task 2026-10-09: the local report copies of CLI and settings-made jobs go to %TEMP%, never the real Documents.
         Offload.Core.Outputs.LocalReports.DocumentsOverride = Path.Combine(HistoryRoot, "history-" + Environment.ProcessId, "Documents");
+        // Plan 11 (Offload Proof): the proof queue lives in %TEMP% too, and the default service options are offline — no
+        // calendar, no block explorer, no calendar allowed for an upgrade — so a job that seals a proof never touches the
+        // network; a test that wants calendars brings its own (LocalHttp).
+        ProofStore.DefaultFolderOverride = Path.Combine(HistoryRoot, "history-" + Environment.ProcessId, "proof");
+        ProofServiceOptions.DefaultOverride = () => new ProofServiceOptions { Calendars = [], HeaderSources = [], AllowedCalendar = _ => false };
+        ProofVerifyOptions.DefaultOverride = () => new ProofVerifyOptions { HeaderSources = [] };
+        // Synthetic block headers (OtsNetworkTests.Mine, regtest difficulty) pass the proof-of-work check of the faked
+        // explorers; a real header passes either way, and HasProofOfWork(MainnetPowLimit) tests Bitcoin's own limit.
+        Offload.Core.Proof.Ots.BitcoinHeaders.PowLimitOverride = OtsNetworkTests.RegtestPowLimit;
+        // Final fix A1: every test machine has SHA instructions (the proof switch is on by default, as on the machines the
+        // tests were written for) and hashes 1 000 MB/s — a test that wants a slow CPU says so (ProofHardware.Force).
+        ProofHardware.ShaOverride = true;
+        ProofHardware.RateOverride = 1000;
+        // Final fix C6: the proof's named mutexes of this test process only (a running mmMover never blocks a test).
+        ProofStore.LockSuffix = "-test-" + Environment.ProcessId;
     }
 #pragma warning restore CA2255
 }
@@ -49,4 +65,66 @@ public class TestEnvironmentTests
         Assert.False(folder.StartsWith(appData, StringComparison.OrdinalIgnoreCase));
     }
 
+    [Fact]
+    public void ProofSeams_TempFolder_Offline()
+    {
+        Assert.Equal(Path.Combine(TestEnvironment.HistoryRoot, "history-" + Environment.ProcessId, "proof"), ProofStore.DefaultFolder);
+        var o = ProofServiceOptions.Default();
+        Assert.Empty(o.Calendars);
+        Assert.Empty(o.HeaderSources);
+        Assert.False(o.AllowedCalendar("https://alice.btc.calendar.opentimestamps.org"));
+        Assert.Null(o.Handler);
+        Assert.Equal(OtsNetworkTests.RegtestPowLimit, Offload.Core.Proof.Ots.BitcoinHeaders.PowLimit);
+        var v = ProofVerifyOptions.Default();
+        Assert.Empty(v.HeaderSources);
+        Assert.Null(v.Handler);
+        Assert.False(v.Offline);
+        Assert.Equal(["https://blockstream.info/api", "https://mempool.space/api"], new ProofVerifyOptions().HeaderSources);
+        Assert.Equal(TimeSpan.FromSeconds(10), new ProofVerifyOptions().Timeout);
+        Assert.True(ProofHardware.HasShaInstructions);
+        Assert.Equal(1000, ProofHardware.MeasureSha256MBps());
+    }
+
+    // Final fix C6: the proof's named mutexes carry a suffix of this test process — a running mmMover (holding the
+    // real names) never blocks a test.
+    [Fact]
+    public void ProofMutexes_OwnNamesPerTestProcess()
+    {
+        var suffix = "-test-" + Environment.ProcessId;
+        Assert.Equal(@"Local\mmMover-proof-store" + suffix, ProofStore.LockName);
+        Assert.Equal(@"Local\mmMover-proof-disks" + suffix, ProofService.DiskLockName);
+
+        using var dir = new TempDir();
+        var store = new ProofStore(dir.Path);   // the usual 10 s: without its own name it would wait for the holder and fail
+        using var held = new ManualResetEventSlim();
+        using var release = new ManualResetEventSlim();
+        var app = new Thread(() =>
+        {
+            // as a running mmMover would (if one runs here, it holds them already — the same case)
+            using Mutex s = new(false, @"Local\mmMover-proof-store"), d = new(false, @"Local\mmMover-proof-disks");
+            bool hs = Take(s), hd = Take(d);
+            held.Set();
+            release.Wait();
+            if (hd) d.ReleaseMutex();
+            if (hs) s.ReleaseMutex();
+        });
+        app.Start();
+        held.Wait();
+        try
+        {
+            store.Add(ProofStoreTests.Sample());   // the real store's name is held: this one is not
+            Assert.Single(store.All());
+        }
+        finally
+        {
+            release.Set();
+            app.Join();
+        }
+
+        static bool Take(Mutex m)
+        {
+            try { return m.WaitOne(TimeSpan.FromSeconds(2)); }
+            catch (AbandonedMutexException) { return true; }
+        }
+    }
 }

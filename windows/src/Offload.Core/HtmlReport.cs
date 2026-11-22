@@ -193,7 +193,7 @@ public static partial class HtmlReport
         if (r.PausedSeconds > 0) Stat(h, Duration(r.PausedSeconds), "paused · not in the speeds");
         var algorithms = r.Algorithms.ToList();
         if (r.Files.Any(f => f.Xxh128 != null) && !algorithms.Contains("xxh128")) algorithms.Add("xxh128");   // plan 10, R2
-        Stat(h, Esc(string.Join(" + ", algorithms.Select(a => a.ToUpperInvariant()))), "checksum");
+        Stat(h, Esc(string.Join(" + ", algorithms.Select(a => a == "sha256" ? "SHA-256" : a.ToUpperInvariant()))), "checksum");   // plan 11
         h.Append("</div>\n\n");
 
         h.Append("<h2>Destinations</h2><div class=\"panel\"><table>\n");

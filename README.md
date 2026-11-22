@@ -74,7 +74,7 @@ card goes into the reader until it is safe to format it.
   - **3 thumbnails of every clip**, camera metadata, timecode, lens, audio and size;
   - the list of all files with their checksums.
 - **ASC MHL v2.** Third-party tools (`ascmhl`, Silverstack, ShotPut Pro) can verify the backup too.
-- **Offload Proof** (Windows, coming in 0.12.0): a time-anchored proof that the files existed unchanged no later than
+- **Offload Proof** (Windows 0.12.0 and Mac 0.8.0, beta; the same format on both): a time-anchored proof that the files existed unchanged no later than
   a given time — see [below](#offload-proof--time-anchored-proof).
 - **Proxies (optional):**
   - scaling and LUT (built-in by camera, your own rules or your own `.cube`);
@@ -102,12 +102,12 @@ card goes into the reader until it is safe to format it.
   - Windows only: projects and presets, notifications in Windows and on the phone (ntfy).
 
 Both versions also have a **command line** (`mmmover`) for scripts: `copy`, `append`, `verify`, `day-report`,
-`summary-report`, `bench`, `ports`, `luts`. What exactly each version can do is in
-[docs/ROZDILY.md](docs/ROZDILY.md) (Czech).
+`summary-report`, `bench`, `ports`, `luts`, and `proof` (`verify | status | upgrade` on the Mac from 0.8.0; on Windows `proof` too).
+What exactly each version can do is in [docs/ROZDILY.md](docs/ROZDILY.md) (Czech).
 
 ## Offload Proof — time-anchored proof
 
-*Windows, in development — coming in version 0.12.0. The Mac gets the same format later.*
+*Windows 0.12.0 and Mac 0.8.0 (beta). Both write the same format and either one verifies the other's proofs.*
 
 Offload Proof gives every offload a cryptographic proof that **these exact files existed, unchanged, no later than
 time T**. Years later you can show that your footage existed on the shooting day and nobody has touched it since.
@@ -193,8 +193,8 @@ automatically from the clip's metadata. The LUTs are generated from the makers' 
 | Folder | [`windows/`](windows/) | [`mac/`](mac/) |
 | System | Windows 10/11 x64 | macOS 13+ (Apple Silicon and Intel) |
 | Technology | C# / .NET 10, WPF | Swift 5.9, SwiftUI |
-| Version | 0.11.1 | 0.7.0 |
-| Status | ahead in features: Copy again, MD5, clip lists CSV/ALE, projects, ntfy, update check, XXH128 in ASC MHL, Offload Proof (in development) | in use on set; card history, append, Verify backup, day report, Verify-in-Proxy and resume after a crash as on Windows |
+| Version | 0.12.0 | 0.8.0 |
+| Status | ahead in features: Copy again, MD5, clip lists CSV/ALE, projects, ntfy, update check, XXH128 in ASC MHL, Offload Proof (0.12.0, beta) | in use on set; card history, append, Verify backup, day report, Verify-in-Proxy, resume after a crash and Offload Proof (0.8.0, beta) as on Windows |
 
 Exactly what each version can do is in the table in [docs/ROZDILY.md](docs/ROZDILY.md). The change history is in
 [docs/VYVOJ-WINDOWS.md](docs/VYVOJ-WINDOWS.md) and [docs/VYVOJ-MAC.md](docs/VYVOJ-MAC.md) (all three in Czech).
@@ -276,6 +276,8 @@ mac/
 | Document | Contents |
 |---|---|
 | [docs/FORMATY.md](docs/FORMATY.md) | folder structure, report JSON/TXT, `.xxh64`, `.md5`, ASC MHL, manifest, day report, clip lists |
+| [docs/OFFLOAD-PROOF.md](docs/OFFLOAD-PROOF.md) | Offload Proof: the brief and plan (Czech) |
+| [shared/proof/README.md](shared/proof/README.md) | Offload Proof: the independent verifier (`verify_proof.py`, Python standard library only) and the shared test vectors |
 | [docs/ROZDILY.md](docs/ROZDILY.md) | Mac × Windows feature comparison, technology, intended differences |
 | [docs/VYVOJ-WINDOWS.md](docs/VYVOJ-WINDOWS.md) | what changed in the Windows version, when and why; planned tasks |
 | [docs/VYVOJ-MAC.md](docs/VYVOJ-MAC.md) | the same for the Mac version |

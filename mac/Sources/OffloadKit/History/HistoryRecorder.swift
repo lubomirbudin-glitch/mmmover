@@ -116,7 +116,9 @@ public enum HistoryRecorder {
         var e = HistoryEntry(id: id, source: plan.source, cardName: plan.cardName, date: plan.date, finished: started)
         e.project = config.project
         e.unfinished = true
-        e.hashAlgorithms = plan.hashKinds.names
+        // What the copy computes (Windows `HashKinds.Names(plan.Hashes)`): with the proof SHA-256 too, as the finished
+        // entry will say (the report's `hashAlgorithms`).
+        e.hashAlgorithms = config.proof ? plan.hashKinds.names + ["sha256"] : plan.hashKinds.names
         e.card = volume.map(historyCard)
         e.destinations = zip(plan.destRoots, plan.cardPaths).map { HistoryDestination(root: $0, cardPath: $1) }
         return e

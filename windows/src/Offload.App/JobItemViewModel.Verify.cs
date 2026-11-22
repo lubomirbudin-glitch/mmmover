@@ -33,6 +33,15 @@ public sealed partial class JobItemViewModel
     public bool ShowChips => Phase != JobPhase.Waiting && Job.Plan != null;
     public CardChip EjectChip => JobCard.Chips(progress.Status, contentConfirmed).Eject;
     public CardChip FormatChip => JobCard.Chips(progress.Status, contentConfirmed).Format;
+    /// Plan 11: the Offload Proof of this offload beside the verdicts — null (no chip) while the proof is off or nothing
+    /// was sealed; its state is the queue entry the proof service last saved (MainViewModel.Proof.cs).
+    public CardChip? ProofChip => JobCard.ProofChip(Job.Config.Proof, progress.Status.ProofError, owner.ProofEntryOf(ProofId));
+    public string? ProofTooltip => JobCard.ProofTooltip(Job.Config.Proof, progress.Status.ProofError, owner.ProofEntryOf(ProofId));
+    internal string? ProofId => progress.Status.ProofId;
+    /// Final fix C5: MainViewModel watches the job's background queue retry (once).
+    internal bool ProofQueueingWatched { get; set; }
+    /// The service saved this card's proof (a finished card is not refreshed every tick).
+    internal void ProofChanged() => RaiseMany(nameof(ProofChip), nameof(ProofTooltip));
     /// "Checked — safe to format the card" is offered while content warnings wait for a look.
     public bool NeedsContentConfirm => JobCard.NeedsContentConfirm(progress.Status, contentConfirmed);
     public string ContentConfirmText => JobCard.ContentConfirmText;

@@ -135,6 +135,13 @@
                     <TextBlock Text="{x:Static core:SettingsTexts.VerifyInProxyNote}" Style="{StaticResource TextMuted}" TextWrapping="Wrap" Margin="26,4,0,0" />
                     <CheckBox Style="{StaticResource Check}" Content="{x:Static core:SettingsTexts.VerifyPrimaryFirstLabel}" IsChecked="{Binding VerifyPrimaryFirst}" Margin="26,10,0,0"
                               IsEnabled="{Binding VerifyInProxy}" AutomationProperties.AutomationId="VerifyPrimaryFirst" />
+                    <!-- Plan 11: Offload Proof — the profile's proof.enabled; independent of verification (SHA-256 is computed while the card is read). -->
+                    <CheckBox Style="{StaticResource Check}" Content="{x:Static core:SettingsTexts.ProofLabel}" IsChecked="{Binding ProofEnabled}" Margin="0,22,0,0"
+                              AutomationProperties.AutomationId="ProofEnabled" />
+                    <TextBlock Text="{x:Static core:SettingsTexts.ProofNote}" Style="{StaticResource TextMuted}" TextWrapping="Wrap" Margin="26,4,0,0" />
+                    <!-- Final fix A1: a CPU without SHA instructions — how fast it hashes (measured off the UI thread). -->
+                    <TextBlock Text="{Binding ProofSpeedNote}" Style="{StaticResource TextWarn}" TextWrapping="Wrap" Margin="26,4,0,0"
+                               Visibility="{Binding ProofSpeedNote, Converter={StaticResource NullToCollapsed}}" />
                     <TextBlock Text="VERIFY BACKUP" Style="{StaticResource StepTitle}" Margin="0,30,0,10" />
                     <TextBlock Text="Checks an earlier backup on a destination against its ASC MHL, without the card (Ctrl+Shift+O)." Style="{StaticResource TextMuted}" />
                     <StackPanel Orientation="Horizontal" Margin="0,12,0,0">

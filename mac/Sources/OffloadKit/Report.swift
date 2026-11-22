@@ -41,6 +41,9 @@ public struct OffloadReport: Codable {
         public var xxh128: String?
         /// Only with MD5 (`hashAlgorithms` contains "md5").
         public var md5: String?
+        /// Plan 11 (Offload Proof, Windows `ReportFile.Sha256`): SHA-256 of the card's file, 64 lower-case hex digits;
+        /// absent when the proof was off or the file was not hashed (it failed, or a resume's record had none).
+        public var sha256: String?
         public var sourceError: String?
         public var destinations: [String]
         public var errors: [String?]
@@ -58,7 +61,7 @@ public struct OffloadReport: Codable {
     public var tool = "offload"
     public var version = OffloadVersion.string
     public var hashAlgorithm = "xxh64"
-    /// Only when not just xxh64: ["xxh64", "md5"].
+    /// Only when not just xxh64: ["xxh64", "md5"] (Windows); with the proof (plan 11) ["xxh64", "sha256"].
     public var hashAlgorithms: [String]?
     /// ASC MHL generation of an append or a repair (`offload_report_NNNN.json`); absent = 1.
     public var generation: Int?
@@ -224,14 +227,18 @@ public struct OffloadReport: Codable {
         state == FileState.verified.rawValue || (!verified && state == FileState.written.rawValue)
     }
 
+    /// `sha256`: per file the proof's SHA-256 (plan 11) — nil when the proof is off: then no file has one and
+    /// `hashAlgorithms` stays absent.
     static func build(plan: OffloadPlan, hashes: [UInt64?], sourceErrors: [String?], destResults: [[DestFileResult]],
-                      verified: Bool, started: Date, copyFinished: Date, finished: Date) -> OffloadReport {
-        let files = plan.scan.files.enumerated().map { i, f in
-            FileEntry(path: f.relPath, size: f.size,
-                      modified: Date(timeIntervalSince1970: Double(f.mtime.tv_sec) + Double(f.mtime.tv_nsec) / 1e9),
-                      xxh64: hashes[i].map(hex64), sourceError: sourceErrors[i],
-                      destinations: destResults.map { $0[i].state.rawValue },
-                      errors: destResults.map { $0[i].error })
+                      verified: Bool, started: Date, copyFinished: Date, finished: Date, sha256: [String?]? = nil) -> OffloadReport {
+        let files = plan.scan.files.enumerated().map { i, f -> FileEntry in
+            var e = FileEntry(path: f.relPath, size: f.size,
+                              modified: Date(timeIntervalSince1970: Double(f.mtime.tv_sec) + Double(f.mtime.tv_nsec) / 1e9),
+                              xxh64: hashes[i].map(hex64), sourceError: sourceErrors[i],
+                              destinations: destResults.map { $0[i].state.rawValue },
+                              errors: destResults.map { $0[i].error })
+            if let sha256 { e.sha256 = sha256[i] }
+            return e
         }
         let dests = plan.destRoots.enumerated().map { d, root -> Destination in
             var x = Destination(root: root, cardPath: plan.cardPaths[d], filesystem: IO.filesystemType(root),
@@ -243,12 +250,18 @@ public struct OffloadReport: Codable {
             x.verifyMethod = verified ? OffloadReport.readBackMethod : nil
             return x
         }
-        return OffloadReport(cardName: plan.cardName, date: plan.date, source: plan.source,
-                             sourceFilesystem: IO.filesystemType(plan.source),
-                             started: started, copyFinished: copyFinished, finished: finished, verified: verified,
-                             totalFiles: files.count, totalBytes: plan.scan.totalBytes,
-                             destinations: dests, files: files, skipped: plan.scan.skipped)
+        var report = OffloadReport(cardName: plan.cardName, date: plan.date, source: plan.source,
+                                   sourceFilesystem: IO.filesystemType(plan.source),
+                                   started: started, copyFinished: copyFinished, finished: finished, verified: verified,
+                                   totalFiles: files.count, totalBytes: plan.scan.totalBytes,
+                                   destinations: dests, files: files, skipped: plan.scan.skipped)
+        // What this copy computed (Windows `HashKinds.Names`): the Mac copy hashes xxh64, and SHA-256 with the proof.
+        if sha256 != nil { report.hashAlgorithms = OffloadReport.proofAlgorithms }
+        return report
     }
+
+    /// `hashAlgorithms` of a copy with the proof (plan 11).
+    public static let proofAlgorithms = ["xxh64", "sha256"]
 
     /// Plain hash list, one "<xxh64>  <path>" per line — readable by humans and by `offload verify`.
     public var hashList: String { hashList(of: "xxh64") }
@@ -465,5 +478,5 @@ public struct ClipEntry: Codable {
 }
 
 public enum OffloadVersion {
-    public static let string = "0.7.0"
+    public static let string = "0.8.0"
 }

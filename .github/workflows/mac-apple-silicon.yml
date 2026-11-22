@@ -1,9 +1,13 @@
 # mmMover for Mac with an Apple Silicon (M1–M4) processor: the third build next to Windows and Mac Intel.
-# The Mac Intel build is made by hand on the Intel MacBook (mac/scripts/build-app.sh); this one runs on GitHub's
+# The Mac Intel build is made by hand on the Intel MacBook (mac/scripts/build-app.sh, still valid) and now also by the
+# job build-intel below (macos-15-intel, "Run workflow" with intel); this one runs on GitHub's
 # Apple Silicon runner, so the app, the CLI, braw-decode and the bundled ffmpeg are all native arm64, and the whole
 # test suite runs on an M processor. Same script, same app — only the processor and the ffmpeg build differ.
 # Every push that touches mac/ or shared/ builds and tests it; "Run workflow" with publish attaches the zip to the
 # GitHub release mac-v<version> (made as a pre-release when it is not there yet).
+# Run workflow inputs: tests = a `swift test --filter` expression (empty = the whole suite); app = false builds and
+# tests only (no ffmpeg, braw-decode, app, zip, upload) — how the branch is tested without making an app; intel = also
+# build the Intel app. A push has no inputs: the whole suite and the app, as before.
 name: Mac Apple Silicon
 
 on:
@@ -11,6 +15,18 @@ on:
     inputs:
       publish:
         description: Attach the zip to the GitHub release mac-v<version>
+        type: boolean
+        default: false
+      tests:
+        description: swift test --filter expression (empty = the whole suite)
+        type: string
+        default: ''
+      app:
+        description: Build the app, zip and upload (false = Build and Test only)
+        type: boolean
+        default: true
+      intel:
+        description: Also build the Intel app (job build-intel on macos-15-intel)
         type: boolean
         default: false
   push:
@@ -50,6 +66,7 @@ jobs:
       # Static ffmpeg/ffprobe 8.1 for arm64 (osxexperts.net; the Intel build uses evermeet.cx, which has no arm64).
       # Pinned by SHA-256: a changed download stops the build instead of shipping something unchecked.
       - name: ffmpeg + ffprobe 8.1 arm64
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.app }}
         run: |
           mkdir -p Tools/bin "$RUNNER_TEMP/ff"
           cd "$RUNNER_TEMP/ff"
@@ -66,6 +83,7 @@ jobs:
 
       # What mmMover's proxies need from ffmpeg (Proxy.swift): VideoToolbox H.264/HEVC, ProRes, burn-in, LUT, colour.
       - name: Check ffmpeg (arm64, encoders, filters)
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.app }}
         working-directory: mac/Tools/bin
         run: |
           for t in ffmpeg ffprobe; do
@@ -82,6 +100,7 @@ jobs:
           done
 
       - name: braw-decode
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.app }}
         run: Tools/braw-decode/build.sh
 
       - name: Build
@@ -90,15 +109,30 @@ jobs:
       # Two tests read the machine's own hardware and the runner is a virtual Mac: its startup disk has no model in
       # DiskArbitration and its USB devices are the VM's virtual keyboard and digitizer. Run them on a real M Mac.
       - name: Test
+        env:
+          TESTS: ${{ inputs.tests }}
         run: |
-          swift test \
+          F=()
+          [[ -n "$TESTS" ]] && F=(--filter "$TESTS")
+          echo "filter: ${F[*]:-(whole suite)}"
+          swift test "${F[@]}" \
             --skip 'MacHardwareTests/testStartupVolumeIsInternalWithAProduct' \
             --skip 'MacHardwareTests/testEveryUsbDeviceLinksToASocketInThePortList'
 
+      # Plan 11 (Offload Proof): the release CLI copies a small random card (a disk image) onto two folders of
+      # $RUNNER_TEMP, then `mmmover proof verify` and the independent shared/proof/verify_proof.py must print the same
+      # SHA-256 and RESULT lines and exit the same (2 = NOT YET) — on that card and on the Windows fixtures. It needs only
+      # .build/release/mmmover and python3, so it runs with app=false too. The copy's stamp after the job asks the real
+      # calendars once (a nonce'd commitment of random data); nothing depends on their answer.
+      - name: Proof cross-check (mmmover proof verify and verify_proof.py)
+        run: bash scripts/proof-cross-check.sh
+
       - name: App
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.app }}
         run: scripts/build-app.sh
 
       - name: Check the app is Apple Silicon
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.app }}
         run: |
           VERSION=$(sed -n 's/.*static let string = "\(.*\)".*/\1/p' Sources/OffloadKit/Report.swift)
           echo "VERSION=$VERSION" >> "$GITHUB_ENV"
@@ -111,6 +145,7 @@ jobs:
           plutil -p "$APP/Contents/Info.plist" | grep -E 'CFBundleShortVersionString|LSMinimumSystemVersion'
 
       - name: Zip
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.app }}
         run: |
           ZIP=build/mmMover-Mac-AppleSilicon-$VERSION.zip
           ditto -c -k --keepParent build/mmMover.app "$ZIP"
@@ -119,18 +154,152 @@ jobs:
           echo "ZIP=$ZIP" >> "$GITHUB_ENV"
 
       - uses: actions/upload-artifact@v4
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.app }}
         with:
           name: mmMover-Mac-AppleSilicon-${{ env.VERSION }}
           path: mac/${{ env.ZIP }}
           compression-level: 0
 
       - name: Publish to release mac-v${{ env.VERSION }}
-        if: ${{ inputs.publish }}
+        if: ${{ inputs.publish && inputs.app }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           TAG=mac-v$VERSION
           gh release view "$TAG" >/dev/null 2>&1 ||
             gh release create "$TAG" --prerelease --latest=false --target "$GITHUB_SHA" \
-              --title "mmMover for Mac $VERSION" --notes "mmMover for Mac $VERSION."
+              --title "mmMover for Mac $VERSION" --notes "mmMover for Mac $VERSION." ||
+            gh release view "$TAG" >/dev/null
+          gh release upload "$TAG" "$ZIP" --clobber
+
+  build-intel:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.intel }}
+    runs-on: macos-15-intel
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: bash
+        working-directory: mac
+    steps:
+      - uses: actions/checkout@v4
+
+      # The Intel MacBook builds with Xcode 26 (macOS 26); the image defaults to Xcode 16. Use the newest Xcode 26.
+      - name: Toolchain
+        run: |
+          ls -d /Applications/Xcode*.app
+          X=$(ls -d /Applications/Xcode_26*.app | sort -V | tail -1)
+          [[ -n $X ]] || { echo "::error::no Xcode 26 on the runner"; exit 1; }
+          sudo xcode-select -s "$X"
+          uname -m
+          sw_vers
+          xcodebuild -version
+          swift --version
+
+      # Static ffmpeg/ffprobe 8.1 for Intel (evermeet.cx; osxexperts.net has no Intel 8.1).
+      # Pinned by SHA-256: a changed download stops the build instead of shipping something unchecked.
+      - name: ffmpeg + ffprobe 8.1 x86_64
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.app }}
+        run: |
+          mkdir -p Tools/bin "$RUNNER_TEMP/ff"
+          cd "$RUNNER_TEMP/ff"
+          curl -fsSL --retry 3 -o ffmpeg.zip https://evermeet.cx/ffmpeg/ffmpeg-8.1.zip
+          curl -fsSL --retry 3 -o ffprobe.zip https://evermeet.cx/ffmpeg/ffprobe-8.1.zip
+          shasum -a 256 -c <<'SUMS'
+          d67db25908eff64b7d0eaa73784f0c55728d9e036a96931095fcf8e8968eefab  ffmpeg.zip
+          b6e9bf4f4ab2992dace205498d99d9e2ede684e3e8ae89485cadd3b91711ea04  ffprobe.zip
+          SUMS
+          unzip -oq ffmpeg.zip ffmpeg
+          unzip -oq ffprobe.zip ffprobe
+          chmod +x ffmpeg ffprobe
+          mv ffmpeg ffprobe "$GITHUB_WORKSPACE/mac/Tools/bin/"
+
+      # What mmMover's proxies need from ffmpeg (Proxy.swift): VideoToolbox H.264/HEVC, ProRes, burn-in, LUT, colour.
+      - name: Check ffmpeg (x86_64, encoders, filters)
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.app }}
+        working-directory: mac/Tools/bin
+        run: |
+          for t in ffmpeg ffprobe; do
+            echo "$t: $(lipo -archs $t) — $(./$t -hide_banner -version | sed -n 1p)"
+            lipo -archs $t | grep -qw x86_64 || { echo "::error::$t is not x86_64"; exit 1; }
+          done
+          enc=$(./ffmpeg -hide_banner -encoders)
+          for e in h264_videotoolbox hevc_videotoolbox prores_ks; do
+            grep -qw "$e" <<<"$enc" || { echo "::error::ffmpeg has no encoder $e"; exit 1; }
+          done
+          flt=$(./ffmpeg -hide_banner -filters)
+          for f in drawtext lut3d colorspace scale; do
+            grep -qw "$f" <<<"$flt" || { echo "::error::ffmpeg has no filter $f"; exit 1; }
+          done
+
+      - name: braw-decode
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.app }}
+        run: Tools/braw-decode/build.sh
+
+      - name: Build
+        run: swift build -c release
+
+      # Two tests read the machine's own hardware and the runner is a virtual Mac: its startup disk has no model in
+      # DiskArbitration and its USB devices are the VM's virtual keyboard and digitizer. Run them on a real M Mac.
+      - name: Test
+        env:
+          TESTS: ${{ inputs.tests }}
+        run: |
+          F=()
+          [[ -n "$TESTS" ]] && F=(--filter "$TESTS")
+          echo "filter: ${F[*]:-(whole suite)}"
+          swift test "${F[@]}" \
+            --skip 'MacHardwareTests/testStartupVolumeIsInternalWithAProduct' \
+            --skip 'MacHardwareTests/testEveryUsbDeviceLinksToASocketInThePortList'
+
+      # Plan 11 (Offload Proof): the release CLI copies a small random card (a disk image) onto two folders of
+      # $RUNNER_TEMP, then `mmmover proof verify` and the independent shared/proof/verify_proof.py must print the same
+      # SHA-256 and RESULT lines and exit the same (2 = NOT YET) — on that card and on the Windows fixtures. It needs only
+      # .build/release/mmmover and python3, so it runs with app=false too. The copy's stamp after the job asks the real
+      # calendars once (a nonce'd commitment of random data); nothing depends on their answer.
+      - name: Proof cross-check (mmmover proof verify and verify_proof.py)
+        run: bash scripts/proof-cross-check.sh
+
+      - name: App
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.app }}
+        run: scripts/build-app.sh
+
+      - name: Check the app is Intel
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.app }}
+        run: |
+          VERSION=$(sed -n 's/.*static let string = "\(.*\)".*/\1/p' Sources/OffloadKit/Report.swift)
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          APP=build/mmMover.app
+          for b in "$APP/Contents/MacOS/mmMover" "$APP"/Contents/Resources/bin/*; do
+            echo "$b: $(lipo -archs "$b")"
+            lipo -archs "$b" | grep -qw x86_64 || { echo "::error::$b is not x86_64"; exit 1; }
+          done
+          "$APP/Contents/Resources/bin/mmmover" --version
+          plutil -p "$APP/Contents/Info.plist" | grep -E 'CFBundleShortVersionString|LSMinimumSystemVersion'
+
+      - name: Zip
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.app }}
+        run: |
+          ZIP=build/mmMover-Mac-Intel-$VERSION.zip
+          ditto -c -k --keepParent build/mmMover.app "$ZIP"
+          ls -l "$ZIP"
+          shasum -a 256 "$ZIP"
+          echo "ZIP=$ZIP" >> "$GITHUB_ENV"
+
+      - uses: actions/upload-artifact@v4
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.app }}
+        with:
+          name: mmMover-Mac-Intel-${{ env.VERSION }}
+          path: mac/${{ env.ZIP }}
+          compression-level: 0
+
+      - name: Publish to release mac-v${{ env.VERSION }}
+        if: ${{ inputs.publish && inputs.app }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG=mac-v$VERSION
+          gh release view "$TAG" >/dev/null 2>&1 ||
+            gh release create "$TAG" --prerelease --latest=false --target "$GITHUB_SHA" \
+              --title "mmMover for Mac $VERSION" --notes "mmMover for Mac $VERSION." ||
+            gh release view "$TAG" >/dev/null
           gh release upload "$TAG" "$ZIP" --clobber
